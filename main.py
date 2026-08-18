@@ -51,7 +51,7 @@ def setup_http_server():
     return app
 
 async def on_startup():
-    # Создание таблиц (закомментировано, используйте Alembic или раскомментируйте для первого раза)
+    # При первом запуске можно создать таблицы (раскомментируйте при необходимости)
     # async with engine.begin() as conn:
     #     from database.models import Base
     #     await conn.run_sync(Base.metadata.create_all)
