@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: binzolife
+    runtime: docker
+    repo: https://github.com/kostrikin552-hub/BinzoLife
+    plan: free
+    region: frankfurt
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PROVIDER_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: INTERNAL_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: PORT
+        value: 8000
+      - key: LOG_LEVEL
+        value: INFO
