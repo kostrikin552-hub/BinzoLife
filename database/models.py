@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, Boolean, ForeignKey,
+    Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
     Enum, Text, Index, func
 )
 from sqlalchemy.orm import declarative_base, relationship
@@ -88,7 +88,7 @@ class AvailabilityReport(Base):
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(Integer, unique=True, nullable=False)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)  # <-- ИСПРАВЛЕНО НА BIGINT
     username = Column(String(100))
     city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
     default_fuel = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False, default=FuelType.AI_95.value)
