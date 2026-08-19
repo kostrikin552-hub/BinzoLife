@@ -12,6 +12,7 @@ from database.models import FuelType, AvailabilityStatus
 from services.rating import calculate_rating
 from utils.helpers import status_emoji, format_time_ago
 from keyboards.reply import main_menu_keyboard, fuel_choice_keyboard
+from handlers.profile import show_profile
 
 router = Router()
 
@@ -25,7 +26,6 @@ async def start_find(message: types.Message, state: FSMContext):
 
 @router.message(FindStates.choosing_fuel, F.text == "⛽ АИ-95")
 async def choose_fuel(message: types.Message, state: FSMContext):
-    # Получаем пользователя и его город
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
         if not user:
@@ -35,7 +35,6 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         
         city_id = user.city_id
         if not city_id:
-            # Город не выбран – просим установить
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="👤 Перейти в профиль", callback_data="go_profile")]
             ])
@@ -47,7 +46,6 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             await state.clear()
             return
         
-        # Получаем координаты города
         city = await get_city_by_id(db, city_id)
         if not city or city.latitude is None or city.longitude is None:
             await message.answer(
@@ -61,8 +59,7 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         lat = city.latitude
         lon = city.longitude
         
-        # Ищем АЗС в этом городе
-        fuel_type = FuelType.AI_95  # пока только АИ-95
+        fuel_type = FuelType.AI_95
         stations = await get_stations_by_city(db, city_id)
         if not stations:
             await message.answer(
@@ -115,7 +112,6 @@ async def choose_fuel(message: types.Message, state: FSMContext):
                 f"📍 {data['distance_km']} км (по прямой) | ~{data['drive_time_min']} мин\n"
                 f"📌 {data['explanation']}\n"
             )
-            # Inline-кнопки – маршрут и подписка
             from keyboards.inline import station_action_keyboard
             await message.answer(
                 text,
@@ -132,10 +128,8 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         await message.answer("Выберите заправку для деталей или вернитесь в меню.", reply_markup=main_menu_keyboard())
         await state.clear()
 
-# Обработчик кнопки "Перейти в профиль"
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
-    # Имитируем нажатие кнопки "👤 Профиль"
-    from handlers.profile import show_profile
+    # Показываем профиль, используя callback.message (это то же сообщение, но можно ответить новым)
     await show_profile(callback.message)
