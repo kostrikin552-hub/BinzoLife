@@ -57,10 +57,12 @@ def setup_http_server():
 async def seed_initial_data():
     """Загружает начальные данные (город Красноярск и АЗС), если их нет."""
     async with AsyncSessionLocal() as db:
+        city_updated = False  # флаг, чтобы знать, нужно ли коммитить
+
         # Проверяем, есть ли город Красноярск
         city = await db.execute(text("SELECT id, latitude, longitude FROM cities WHERE name = 'Красноярск'"))
         row = city.fetchone()
-        
+
         if not row:
             # Создаём город с координатами
             new_city = City(
@@ -73,6 +75,7 @@ async def seed_initial_data():
             db.add(new_city)
             await db.flush()
             city_id = new_city.id
+            city_updated = True
             logger.info("Город Красноярск создан с координатами")
         else:
             city_id = row[0]
@@ -82,12 +85,19 @@ async def seed_initial_data():
                     text("UPDATE cities SET latitude = :lat, longitude = :lon WHERE id = :id"),
                     {"lat": 56.0109, "lon": 92.8525, "id": city_id}
                 )
+                city_updated = True
                 logger.info("Обновлены координаты для города Красноярск")
-        
+
+        # Сохраняем изменения города, если они были
+        if city_updated:
+            await db.commit()
+            # Начинаем новую транзакцию для дальнейших операций
+            # (в SQLAlchemy после commit сессия становится "чистой", новые операции будут в новой транзакции)
+
         # Проверяем, есть ли станции
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
-        
+
         if count == 0:
             stations_data = [
                 ("Газпромнефть 349", "Газпромнефть", "ул. 60 лет Октября 105А", 55.9829, 92.8969, 67.59),
@@ -112,7 +122,7 @@ async def seed_initial_data():
                 ("Кит", "Кит", "пер. Телевизорный 4", 56.0247, 92.7879, 71.35),
                 ("ОПТИ 2429", "ОПТИ", "пер. Телевизорный 4", 56.0247, 92.7879, 95.9),
             ]
-            
+
             for name, brand, address, lat, lon, price in stations_data:
                 station = Station(
                     city_id=city_id,
@@ -125,7 +135,7 @@ async def seed_initial_data():
                 )
                 db.add(station)
                 await db.flush()
-                
+
                 price_entry = FuelPrice(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -135,7 +145,7 @@ async def seed_initial_data():
                     recorded_at=func.now()
                 )
                 db.add(price_entry)
-                
+
                 availability = AvailabilityReport(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -145,9 +155,11 @@ async def seed_initial_data():
                     recorded_at=func.now()
                 )
                 db.add(availability)
-            
+
             await db.commit()
             logger.info(f"Загружено {len(stations_data)} станций в Красноярск")
+        else:
+            logger.info(f"В городе уже есть {count} станций, пропускаем загрузку.")
 
 # ---------- Startup ----------
 async def on_startup():
@@ -155,7 +167,7 @@ async def on_startup():
         from database.models import Base
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
-    
+
     await seed_initial_data()
     logger.info("Бот запущен")
 
