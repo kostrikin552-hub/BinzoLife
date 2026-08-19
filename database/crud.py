@@ -3,7 +3,7 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
 from database.models import (
     City, Station, FuelPrice, AvailabilityReport, User, Notification,
-    FuelType, AvailabilityStatus, SourceType, UserAction, Payment
+    FuelType, AvailabilityStatus, SourceType, UserAction, Payment, Review
 )
 from typing import Optional, List
 from datetime import datetime, timezone, timedelta
@@ -337,3 +337,25 @@ async def is_user_pro(db: AsyncSession, user: User) -> bool:
 async def get_payment_by_telegram_charge_id(db: AsyncSession, charge_id: str) -> Optional[Payment]:
     result = await db.execute(select(Payment).where(Payment.telegram_payment_charge_id == charge_id))
     return result.scalar_one_or_none()
+
+# -------- Отзывы (новые функции) --------
+async def create_review(db: AsyncSession, user_id: int, rating: int, comment: str = None) -> Review:
+    review = Review(user_id=user_id, rating=rating, comment=comment)
+    db.add(review)
+    await db.commit()
+    await db.refresh(review)
+    return review
+
+async def get_all_reviews(db: AsyncSession, limit: int = 100) -> List[Review]:
+    result = await db.execute(
+        select(Review)
+        .options(selectinload(Review.user))
+        .order_by(Review.created_at.desc())
+        .limit(limit)
+    )
+    return result.scalars().all()
+
+async def get_avg_rating(db: AsyncSession) -> float:
+    result = await db.execute(select(func.avg(Review.rating)))
+    avg = result.scalar()
+    return round(avg, 1) if avg else 0.0
