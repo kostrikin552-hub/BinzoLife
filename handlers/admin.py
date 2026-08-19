@@ -7,7 +7,7 @@ from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, create_station, save_price, save_availability_report,
     get_user, get_station_by_id, deactivate_station, activate_pro,
-    get_station_by_name_address
+    get_station_by_name_address, get_all_reviews, get_avg_rating
 )
 from database.models import SourceType, AvailabilityStatus, FuelType
 
@@ -236,3 +236,30 @@ async def set_pro_cmd(message: types.Message):
         else:
             await activate_pro(db, user, days)
             await message.answer(f"PRO активирован на {days} дней для пользователя {telegram_id}")
+
+@router.message(Command("reviews"))
+async def show_reviews(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+    
+    async with AsyncSessionLocal() as db:
+        reviews = await get_all_reviews(db, limit=20)
+        avg = await get_avg_rating(db)
+        
+        if not reviews:
+            await message.answer("Пока нет отзывов.")
+            return
+        
+        text = f"📊 Средний рейтинг: {avg}⭐\n\n"
+        for i, rev in enumerate(reviews, 1):
+            username = rev.user.username or f"User{rev.user.telegram_id}"
+            text += f"{i}. {username}: {rev.rating}⭐ "
+            if rev.comment:
+                text += f"— {rev.comment[:50]}"
+            text += f"\n"
+            if len(text) > 3800:
+                await message.answer(text)
+                text = ""
+        if text:
+            await message.answer(text)
