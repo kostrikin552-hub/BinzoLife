@@ -10,7 +10,7 @@ from sqlalchemy import text, func
 from config import settings
 from database.session import engine, AsyncSessionLocal
 from database.models import Base, City, Station, FuelPrice, AvailabilityReport, FuelType, AvailabilityStatus, SourceType
-from handlers import start, menu, find, profile, admin, notifications, common, payments
+from handlers import start, menu, find, profile, admin, notifications, common, payments, review
 from services.notifications import check_notifications
 from services.fuel import refresh_prices
 
@@ -26,6 +26,7 @@ dp.include_router(profile.router)
 dp.include_router(notifications.router)
 dp.include_router(admin.router)
 dp.include_router(payments.router)
+dp.include_router(review.router)      # <-- добавлено
 dp.include_router(common.router)
 
 # ---------- HTTP ----------
@@ -57,14 +58,12 @@ def setup_http_server():
 async def seed_initial_data():
     """Загружает начальные данные (город Красноярск и АЗС), если их нет."""
     async with AsyncSessionLocal() as db:
-        city_updated = False  # флаг, чтобы знать, нужно ли коммитить
+        city_updated = False
 
-        # Проверяем, есть ли город Красноярск
         city = await db.execute(text("SELECT id, latitude, longitude FROM cities WHERE name = 'Красноярск'"))
         row = city.fetchone()
 
         if not row:
-            # Создаём город с координатами
             new_city = City(
                 name="Красноярск",
                 region="Красноярский край",
@@ -79,7 +78,6 @@ async def seed_initial_data():
             logger.info("Город Красноярск создан с координатами")
         else:
             city_id = row[0]
-            # Если координаты отсутствуют, обновляем их
             if row[1] is None or row[2] is None:
                 await db.execute(
                     text("UPDATE cities SET latitude = :lat, longitude = :lon WHERE id = :id"),
@@ -88,13 +86,9 @@ async def seed_initial_data():
                 city_updated = True
                 logger.info("Обновлены координаты для города Красноярск")
 
-        # Сохраняем изменения города, если они были
         if city_updated:
             await db.commit()
-            # Начинаем новую транзакцию для дальнейших операций
-            # (в SQLAlchemy после commit сессия становится "чистой", новые операции будут в новой транзакции)
 
-        # Проверяем, есть ли станции
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
 
