@@ -6,7 +6,7 @@ from database.models import (
     FuelType, AvailabilityStatus, SourceType, UserAction, Payment
 )
 from typing import Optional, List
-import datetime
+from datetime import datetime, timezone, timedelta
 
 # -------- Города --------
 async def get_city_by_name(db: AsyncSession, name: str, include_inactive: bool = False) -> Optional[City]:
@@ -88,14 +88,16 @@ async def get_latest_price(db: AsyncSession, station_id: int, fuel_type: FuelTyp
 
 async def save_price(db: AsyncSession, station_id: int, fuel_type: FuelType,
                      price: float, source: SourceType, confidence: float = 0.5,
-                     recorded_at: datetime.datetime = None) -> FuelPrice:
+                     recorded_at: datetime = None) -> FuelPrice:
+    if recorded_at is None:
+        recorded_at = datetime.now(timezone.utc)
     entry = FuelPrice(
         station_id=station_id,
         fuel_type=fuel_type,
         price=price,
         source=source,
         confidence=confidence,
-        recorded_at=recorded_at or datetime.datetime.utcnow()
+        recorded_at=recorded_at
     )
     db.add(entry)
     await db.commit()
@@ -104,7 +106,7 @@ async def save_price(db: AsyncSession, station_id: int, fuel_type: FuelType,
 
 async def get_price_history(db: AsyncSession, station_id: int, fuel_type: FuelType,
                             days: int = 30) -> List[FuelPrice]:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     result = await db.execute(
         select(FuelPrice)
         .where(
@@ -117,7 +119,7 @@ async def get_price_history(db: AsyncSession, station_id: int, fuel_type: FuelTy
     return result.scalars().all()
 
 async def get_avg_price_30d(db: AsyncSession, city_id: int, fuel_type: FuelType) -> Optional[float]:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     stmt = (
         select(func.avg(FuelPrice.price))
         .join(Station)
@@ -131,7 +133,7 @@ async def get_avg_price_30d(db: AsyncSession, city_id: int, fuel_type: FuelType)
     return result.scalar()
 
 async def get_min_price_30d(db: AsyncSession, city_id: int, fuel_type: FuelType) -> Optional[float]:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     stmt = (
         select(func.min(FuelPrice.price))
         .join(Station)
@@ -145,7 +147,7 @@ async def get_min_price_30d(db: AsyncSession, city_id: int, fuel_type: FuelType)
     return result.scalar()
 
 async def get_max_price_30d(db: AsyncSession, city_id: int, fuel_type: FuelType) -> Optional[float]:
-    cutoff = datetime.datetime.utcnow() - datetime.timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     stmt = (
         select(func.max(FuelPrice.price))
         .join(Station)
@@ -172,7 +174,9 @@ async def save_availability_report(db: AsyncSession, station_id: int, fuel_type:
                                    status: AvailabilityStatus, source: SourceType,
                                    confidence: float, user_id: Optional[int] = None,
                                    lat: Optional[float] = None, lon: Optional[float] = None,
-                                   recorded_at: datetime.datetime = None) -> AvailabilityReport:
+                                   recorded_at: datetime = None) -> AvailabilityReport:
+    if recorded_at is None:
+        recorded_at = datetime.now(timezone.utc)
     report = AvailabilityReport(
         station_id=station_id,
         fuel_type=fuel_type,
@@ -182,7 +186,7 @@ async def save_availability_report(db: AsyncSession, station_id: int, fuel_type:
         user_id=user_id,
         latitude=lat,
         longitude=lon,
-        recorded_at=recorded_at or datetime.datetime.utcnow()
+        recorded_at=recorded_at
     )
     db.add(report)
     await db.commit()
@@ -273,7 +277,7 @@ async def update_notification_last_triggered(db: AsyncSession, notif_id: int) ->
     result = await db.execute(select(Notification).where(Notification.id == notif_id))
     notif = result.scalar_one_or_none()
     if notif:
-        notif.last_triggered_at = datetime.datetime.utcnow()
+        notif.last_triggered_at = datetime.now(timezone.utc)
         await db.commit()
 
 # -------- Действия --------
@@ -300,7 +304,7 @@ async def create_payment(
         currency=currency,
         tariff=tariff,
         status="succeeded",
-        paid_at=datetime.datetime.utcnow()
+        paid_at=datetime.now(timezone.utc)
     )
     db.add(payment)
     await db.commit()
@@ -308,23 +312,23 @@ async def create_payment(
     return payment
 
 async def activate_pro(db: AsyncSession, user: User, days: int = 30) -> User:
-    from datetime import datetime, timedelta
-    user.is_pro = True
-    if user.pro_until and user.pro_until > datetime.utcnow():
+    now = datetime.now(timezone.utc)
+    if user.pro_until and user.pro_until > now:
         user.pro_until = user.pro_until + timedelta(days=days)
     else:
-        user.pro_until = datetime.utcnow() + timedelta(days=days)
+        user.pro_until = now + timedelta(days=days)
+    user.is_pro = True
     await db.commit()
     await db.refresh(user)
     return user
 
 async def is_user_pro(db: AsyncSession, user: User) -> bool:
-    from datetime import datetime
     if not user.is_pro:
         return False
     if user.pro_until is None:
         return True
-    if user.pro_until < datetime.utcnow():
+    now = datetime.now(timezone.utc)
+    if user.pro_until < now:
         user.is_pro = False
         await db.commit()
         return False
@@ -332,7 +336,4 @@ async def is_user_pro(db: AsyncSession, user: User) -> bool:
 
 async def get_payment_by_telegram_charge_id(db: AsyncSession, charge_id: str) -> Optional[Payment]:
     result = await db.execute(select(Payment).where(Payment.telegram_payment_charge_id == charge_id))
-    return result.scalar_one_or_none()
-async def get_city_by_id(db: AsyncSession, city_id: int) -> Optional[City]:
-    result = await db.execute(select(City).where(City.id == city_id))
     return result.scalar_one_or_none()
