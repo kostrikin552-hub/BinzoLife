@@ -4,6 +4,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
+from sqlalchemy import text  # <-- ДОБАВЛЕНО
 
 from config import settings
 from database.session import engine
@@ -51,11 +52,21 @@ def setup_http_server():
     return app
 
 async def on_startup():
-    # ✅ РАСКОММЕНТИРОВАНО: создаём таблицы при первом запуске
     async with engine.begin() as conn:
         from database.models import Base
+
+        # Исправление типа колонки telegram_id на BIGINT, если она ещё INTEGER
+        try:
+            await conn.execute(text("ALTER TABLE users ALTER COLUMN telegram_id TYPE BIGINT;"))
+            logger.info("Колонка telegram_id изменена на BIGINT")
+        except Exception as e:
+            # Если колонка уже BIGINT или таблица не существует, игнорируем ошибку
+            logger.warning(f"Не удалось изменить колонку telegram_id (возможно, уже BIGINT): {e}")
+
+        # Создаём все таблицы, если их нет
         await conn.run_sync(Base.metadata.create_all)
-    logger.info("Таблицы базы данных созданы (если их не было)")
+        logger.info("Таблицы базы данных созданы (если их не было)")
+
     logger.info("Бот запущен")
 
 async def on_shutdown():
