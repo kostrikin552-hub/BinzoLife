@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
-from sqlalchemy import text, func  # <--- ДОБАВЛЕН func
+from sqlalchemy import text, func
 
 from config import settings
 from database.session import engine, AsyncSessionLocal
@@ -58,16 +58,33 @@ async def seed_initial_data():
     """Загружает начальные данные (город Красноярск и АЗС), если их нет."""
     async with AsyncSessionLocal() as db:
         # Проверяем, есть ли город Красноярск
-        city = await db.execute(text("SELECT id FROM cities WHERE name = 'Красноярск'"))
-        city_id = city.scalar_one_or_none()
+        city = await db.execute(text("SELECT id, latitude, longitude FROM cities WHERE name = 'Красноярск'"))
+        row = city.fetchone()
         
-        if not city_id:
-            new_city = City(name="Красноярск", region="Красноярский край", is_active=True)
+        if not row:
+            # Создаём город с координатами
+            new_city = City(
+                name="Красноярск",
+                region="Красноярский край",
+                latitude=56.0109,
+                longitude=92.8525,
+                is_active=True
+            )
             db.add(new_city)
             await db.flush()
             city_id = new_city.id
-            logger.info("Город Красноярск создан")
+            logger.info("Город Красноярск создан с координатами")
+        else:
+            city_id = row[0]
+            # Если координаты отсутствуют, обновляем их
+            if row[1] is None or row[2] is None:
+                await db.execute(
+                    text("UPDATE cities SET latitude = :lat, longitude = :lon WHERE id = :id"),
+                    {"lat": 56.0109, "lon": 92.8525, "id": city_id}
+                )
+                logger.info("Обновлены координаты для города Красноярск")
         
+        # Проверяем, есть ли станции
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
         
