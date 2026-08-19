@@ -13,6 +13,8 @@ def format_time_ago(dt: datetime) -> str:
     if not dt:
         return "неизвестно"
     now = datetime.now(timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
     diff = now - dt
     seconds = diff.total_seconds()
     if seconds < 60:
