@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import io
 from datetime import datetime
+from typing import Optional  # <-- добавлен импорт
 from database.session import AsyncSessionLocal
 from database.crud import get_price_history
 from database.models import FuelType
