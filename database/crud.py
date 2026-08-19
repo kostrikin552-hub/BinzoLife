@@ -333,3 +333,6 @@ async def is_user_pro(db: AsyncSession, user: User) -> bool:
 async def get_payment_by_telegram_charge_id(db: AsyncSession, charge_id: str) -> Optional[Payment]:
     result = await db.execute(select(Payment).where(Payment.telegram_payment_charge_id == charge_id))
     return result.scalar_one_or_none()
+async def get_city_by_id(db: AsyncSession, city_id: int) -> Optional[City]:
+    result = await db.execute(select(City).where(City.id == city_id))
+    return result.scalar_one_or_none()
