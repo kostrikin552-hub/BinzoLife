@@ -88,7 +88,7 @@ class AvailabilityReport(Base):
 class User(Base):
     __tablename__ = "users"
     id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)  # <-- ИСПРАВЛЕНО НА BIGINT
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(100))
     city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
     default_fuel = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False, default=FuelType.AI_95.value)
@@ -102,6 +102,7 @@ class User(Base):
     reports = relationship("AvailabilityReport", back_populates="user")
     notifications = relationship("Notification", back_populates="user")
     payments = relationship("Payment", back_populates="user")
+    reviews = relationship("Review", back_populates="user")  # <-- добавлено
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -143,3 +144,14 @@ class Payment(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="payments")
+
+# ---------- Новая модель Review ----------
+class Review(Base):
+    __tablename__ = "reviews"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    rating = Column(Integer, nullable=False)  # 1-5
+    comment = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="reviews")
