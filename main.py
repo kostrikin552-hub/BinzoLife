@@ -1,10 +1,11 @@
 import asyncio
 import logging
+from datetime import datetime
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
-from sqlalchemy import text
+from sqlalchemy import text, func  # <--- ДОБАВЛЕН func
 
 from config import settings
 from database.session import engine, AsyncSessionLocal
@@ -61,19 +62,16 @@ async def seed_initial_data():
         city_id = city.scalar_one_or_none()
         
         if not city_id:
-            # Создаём город
             new_city = City(name="Красноярск", region="Красноярский край", is_active=True)
             db.add(new_city)
             await db.flush()
             city_id = new_city.id
             logger.info("Город Красноярск создан")
         
-        # Проверяем, есть ли станции
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
         
         if count == 0:
-            # Список станций: (name, brand, address, lat, lon, price)
             stations_data = [
                 ("Газпромнефть 349", "Газпромнефть", "ул. 60 лет Октября 105А", 55.9829, 92.8969, 67.59),
                 ("Газпромнефть 201", "Газпромнефть", "ул. Мичурина 30Г", 55.99584, 92.97174, 67.59),
@@ -109,9 +107,8 @@ async def seed_initial_data():
                     is_active=True
                 )
                 db.add(station)
-                await db.flush()  # получить station.id
+                await db.flush()
                 
-                # Добавляем цену
                 price_entry = FuelPrice(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -122,7 +119,6 @@ async def seed_initial_data():
                 )
                 db.add(price_entry)
                 
-                # Добавляем наличие
                 availability = AvailabilityReport(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -140,13 +136,10 @@ async def seed_initial_data():
 async def on_startup():
     async with engine.begin() as conn:
         from database.models import Base
-        # Создаём таблицы, если их нет
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
     
-    # Загружаем начальные данные
     await seed_initial_data()
-    
     logger.info("Бот запущен")
 
 async def on_shutdown():
