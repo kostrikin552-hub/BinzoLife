@@ -89,6 +89,9 @@ async def set_price_cmd(message: types.Message):
     except ValueError:
         await message.answer("Неверный формат.")
         return
+    if price <= 0:
+        await message.answer("❌ Цена должна быть больше 0.")
+        return
     async with AsyncSessionLocal() as db:
         station = await get_station_by_id(db, station_id)
         if not station:
@@ -110,9 +113,11 @@ async def set_availability_cmd(message: types.Message):
     try:
         station_id = int(parts[1])
         status_str = parts[2].upper()
+        if status_str not in ["GREEN", "YELLOW", "RED", "GRAY"]:
+            raise ValueError
         status = AvailabilityStatus[status_str]
     except (ValueError, KeyError):
-        await message.answer("Неверный статус. Допустимые: GREEN, YELLOW, RED, GRAY")
+        await message.answer("❌ Неверный статус. Допустимые: GREEN, YELLOW, RED, GRAY")
         return
     async with AsyncSessionLocal() as db:
         station = await get_station_by_id(db, station_id)
