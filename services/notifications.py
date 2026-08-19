@@ -19,7 +19,10 @@ async def check_notifications():
         notifications = await get_all_active_notifications(db)
         for notif in notifications:
             if notif.notify_on_low_price and notif.last_triggered_at:
-                if (datetime.now(timezone.utc) - notif.last_triggered_at).total_seconds() < 86400:
+                last = notif.last_triggered_at
+                if last.tzinfo is None:
+                    last = last.replace(tzinfo=timezone.utc)
+                if (datetime.now(timezone.utc) - last).total_seconds() < 86400:
                     continue
             fuel = notif.fuel_type
             station = notif.station
