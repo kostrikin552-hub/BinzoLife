@@ -51,10 +51,11 @@ def setup_http_server():
     return app
 
 async def on_startup():
-    # При первом запуске можно создать таблицы (раскомментируйте при необходимости)
-    # async with engine.begin() as conn:
-    #     from database.models import Base
-    #     await conn.run_sync(Base.metadata.create_all)
+    # ✅ РАСКОММЕНТИРОВАНО: создаём таблицы при первом запуске
+    async with engine.begin() as conn:
+        from database.models import Base
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Таблицы базы данных созданы (если их не было)")
     logger.info("Бот запущен")
 
 async def on_shutdown():
