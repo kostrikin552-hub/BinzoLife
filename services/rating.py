@@ -1,6 +1,6 @@
 import math
 from typing import Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from database.models import Station, FuelPrice, AvailabilityReport, AvailabilityStatus
 from utils.helpers import haversine_distance
 
@@ -14,6 +14,8 @@ def calculate_rating(
     min_price_30d: float,
     max_price_30d: float
 ) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+
     # 1. Ценовая привлекательность (50%)
     price_score = 0.0
     if avg_price_30d > 0:
@@ -26,8 +28,12 @@ def calculate_rating(
 
     # 2. Наличие и свежесть (20%)
     freshness_score = 0.0
+    age = 0
     if availability_record:
-        age = (datetime.utcnow() - availability_record.recorded_at).total_seconds() / 3600
+        rec_time = availability_record.recorded_at
+        if rec_time.tzinfo is None:
+            rec_time = rec_time.replace(tzinfo=timezone.utc)
+        age = (now - rec_time).total_seconds() / 3600
         freshness_score = max(0.0, 1.0 - age / 24.0)
         confidence_score = availability_record.confidence
         status_score = {
@@ -45,7 +51,10 @@ def calculate_rating(
     distance_score = max(0.0, 1.0 - dist / 5.0)
 
     # 4. Качество данных (10%)
-    price_age = (datetime.utcnow() - price_record.recorded_at).total_seconds() / 3600
+    price_time = price_record.recorded_at
+    if price_time.tzinfo is None:
+        price_time = price_time.replace(tzinfo=timezone.utc)
+    price_age = (now - price_time).total_seconds() / 3600
     data_quality = max(0.0, 1.0 - price_age / 48.0)
 
     total = (price_score * 0.5 + availability_score * 0.2 + distance_score * 0.2 + data_quality * 0.1) * 100
