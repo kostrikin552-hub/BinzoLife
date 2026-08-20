@@ -16,9 +16,7 @@ from services.fuel import refresh_prices
 
 logger = logging.getLogger(__name__)
 
-# Глобальная переменная для хранения текущего бота (чтобы закрывать при завершении)
 current_bot = None
-
 dp = Dispatcher()
 
 dp.include_router(start.router)
@@ -173,16 +171,12 @@ async def start_bot_with_retry():
 
     for attempt in range(max_retries):
         try:
-            # Создаём нового бота при каждой попытке
             bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             current_bot = bot
 
-            # Удаляем вебхук и принудительно разрываем сессию
             await bot.delete_webhook(drop_pending_updates=True)
-            await bot.log_out()  # принудительный выход из сессии
-            logger.info("Вебхук удалён, сессия завершена")
+            logger.info("Вебхук удалён")
 
-            # Запускаем polling
             await dp.start_polling(bot)
             break
         except Exception as e:
@@ -191,7 +185,6 @@ async def start_bot_with_retry():
                 logger.warning(f"Конфликт, попытка {attempt+1}/{max_retries}, пауза {retry_delay:.2f} сек")
                 await asyncio.sleep(retry_delay)
                 retry_delay *= 1.5
-                # Закрываем сессию текущего бота перед новой попыткой
                 if current_bot:
                     await current_bot.session.close()
                     current_bot = None
