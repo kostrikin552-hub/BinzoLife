@@ -161,10 +161,10 @@ async def on_shutdown():
 
 # ---------- Функция запуска с повторными попытками ----------
 async def start_bot_with_retry():
-    max_retries = 15
+    max_retries = 20
     retry_delay = 2.0
 
-    # Принудительно закрываем сессию и удаляем вебхук
+    # Принудительно закрываем старую сессию и удаляем вебхук
     await bot.session.close()
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("Сессия закрыта, вебхук удалён")
