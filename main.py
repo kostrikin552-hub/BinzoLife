@@ -26,7 +26,7 @@ dp.include_router(profile.router)
 dp.include_router(notifications.router)
 dp.include_router(admin.router)
 dp.include_router(payments.router)
-dp.include_router(review.router)      # <-- добавлено
+dp.include_router(review.router)
 dp.include_router(common.router)
 
 # ---------- HTTP ----------
@@ -44,8 +44,12 @@ async def tasks_prices_handler(request):
     token = request.headers.get("X-Internal-Token")
     if token != settings.INTERNAL_TOKEN:
         return web.Response(status=403, text="Forbidden")
-    await refresh_prices()
-    return web.Response(text='{"status":"prices_refreshed"}', content_type='application/json')
+    
+    # Запускаем парсинг в фоне, чтобы не ждать 30+ секунд
+    asyncio.create_task(refresh_prices())
+    
+    # Мгновенный ответ для cron-job
+    return web.Response(text='{"status":"started"}', content_type='application/json')
 
 def setup_http_server():
     app = web.Application()
