@@ -44,11 +44,7 @@ async def tasks_prices_handler(request):
     token = request.headers.get("X-Internal-Token")
     if token != settings.INTERNAL_TOKEN:
         return web.Response(status=403, text="Forbidden")
-    
-    # Запускаем парсинг в фоне, чтобы не ждать 30+ секунд
     asyncio.create_task(refresh_prices())
-    
-    # Мгновенный ответ для cron-job
     return web.Response(text='{"status":"started"}', content_type='application/json')
 
 def setup_http_server():
@@ -173,6 +169,29 @@ async def on_shutdown():
     await engine.dispose()
     logger.info("Бот остановлен")
 
+# ---------- Функция запуска с повторными попытками ----------
+async def start_bot_with_retry():
+    """Запускает polling с повторными попытками при конфликте."""
+    max_retries = 10
+    retry_delay = 2  # секунды
+
+    # Удаляем вебхук перед запуском
+    await bot.delete_webhook(drop_pending_updates=True)
+    logger.info("Вебхук удалён")
+
+    for attempt in range(max_retries):
+        try:
+            await dp.start_polling(bot)
+            break
+        except Exception as e:
+            if "Conflict" in str(e) or "terminated by other getUpdates" in str(e):
+                logger.warning(f"Конфликт экземпляров, попытка {attempt+1}/{max_retries} через {retry_delay} сек...")
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 1.5  # экспоненциальная задержка
+                continue
+            else:
+                raise e
+
 async def main():
     app = setup_http_server()
     runner = web.AppRunner(app)
@@ -185,7 +204,8 @@ async def main():
     dp.shutdown.register(on_shutdown)
 
     try:
-        await dp.start_polling(bot)
+        # Запускаем бота с повторными попытками
+        await start_bot_with_retry()
     finally:
         await runner.cleanup()
         await engine.dispose()
