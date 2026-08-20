@@ -16,7 +16,9 @@ from services.fuel import refresh_prices
 
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Глобальная переменная для хранения текущего бота (чтобы закрывать при завершении)
+current_bot = None
+
 dp = Dispatcher()
 
 dp.include_router(start.router)
@@ -156,21 +158,31 @@ async def on_startup():
     logger.info("Бот запущен")
 
 async def on_shutdown():
+    global current_bot
+    if current_bot:
+        await current_bot.session.close()
+        logger.info("Сессия бота закрыта")
     await engine.dispose()
     logger.info("Бот остановлен")
 
 # ---------- Функция запуска с повторными попытками ----------
 async def start_bot_with_retry():
+    global current_bot
     max_retries = 20
     retry_delay = 2.0
 
-    # Принудительно закрываем старую сессию и удаляем вебхук
-    await bot.session.close()
-    await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Сессия закрыта, вебхук удалён")
-
     for attempt in range(max_retries):
         try:
+            # Создаём нового бота при каждой попытке
+            bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+            current_bot = bot
+
+            # Удаляем вебхук и принудительно разрываем сессию
+            await bot.delete_webhook(drop_pending_updates=True)
+            await bot.log_out()  # принудительный выход из сессии
+            logger.info("Вебхук удалён, сессия завершена")
+
+            # Запускаем polling
             await dp.start_polling(bot)
             break
         except Exception as e:
@@ -178,11 +190,11 @@ async def start_bot_with_retry():
             if "Conflict" in error_str or "terminated by other getUpdates" in error_str:
                 logger.warning(f"Конфликт, попытка {attempt+1}/{max_retries}, пауза {retry_delay:.2f} сек")
                 await asyncio.sleep(retry_delay)
-                retry_delay *= 1.5  # экспоненциальный рост
-                # После нескольких попыток попробуем сбросить вебхук ещё раз
-                if attempt % 3 == 2:
-                    await bot.delete_webhook(drop_pending_updates=True)
-                    logger.info("Повторный сброс вебхука")
+                retry_delay *= 1.5
+                # Закрываем сессию текущего бота перед новой попыткой
+                if current_bot:
+                    await current_bot.session.close()
+                    current_bot = None
                 continue
             else:
                 logger.error(f"Неизвестная ошибка: {e}")
