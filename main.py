@@ -56,13 +56,10 @@ def setup_http_server():
 
 # ---------- Функция для загрузки начальных данных ----------
 async def seed_initial_data():
-    """Загружает начальные данные (город Красноярск и АЗС), если их нет."""
     async with AsyncSessionLocal() as db:
         city_updated = False
-
         city = await db.execute(text("SELECT id, latitude, longitude FROM cities WHERE name = 'Красноярск'"))
         row = city.fetchone()
-
         if not row:
             new_city = City(
                 name="Красноярск",
@@ -85,13 +82,11 @@ async def seed_initial_data():
                 )
                 city_updated = True
                 logger.info("Обновлены координаты для города Красноярск")
-
         if city_updated:
             await db.commit()
 
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
-
         if count == 0:
             stations_data = [
                 ("Газпромнефть 349", "Газпромнефть", "ул. 60 лет Октября 105А", 55.9829, 92.8969, 67.59),
@@ -116,7 +111,6 @@ async def seed_initial_data():
                 ("Кит", "Кит", "пер. Телевизорный 4", 56.0247, 92.7879, 71.35),
                 ("ОПТИ 2429", "ОПТИ", "пер. Телевизорный 4", 56.0247, 92.7879, 95.9),
             ]
-
             for name, brand, address, lat, lon, price in stations_data:
                 station = Station(
                     city_id=city_id,
@@ -129,7 +123,6 @@ async def seed_initial_data():
                 )
                 db.add(station)
                 await db.flush()
-
                 price_entry = FuelPrice(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -139,7 +132,6 @@ async def seed_initial_data():
                     recorded_at=func.now()
                 )
                 db.add(price_entry)
-
                 availability = AvailabilityReport(
                     station_id=station.id,
                     fuel_type=FuelType.AI_95,
@@ -149,7 +141,6 @@ async def seed_initial_data():
                     recorded_at=func.now()
                 )
                 db.add(availability)
-
             await db.commit()
             logger.info(f"Загружено {len(stations_data)} станций в Красноярск")
         else:
@@ -161,7 +152,6 @@ async def on_startup():
         from database.models import Base
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
-
     await seed_initial_data()
     logger.info("Бот запущен")
 
@@ -171,26 +161,32 @@ async def on_shutdown():
 
 # ---------- Функция запуска с повторными попытками ----------
 async def start_bot_with_retry():
-    """Запускает polling с повторными попытками при конфликте."""
-    max_retries = 10
-    retry_delay = 2  # секунды
+    max_retries = 15
+    retry_delay = 2.0
 
-    # Удаляем вебхук перед запуском
+    # Принудительно закрываем сессию и удаляем вебхук
+    await bot.session.close()
     await bot.delete_webhook(drop_pending_updates=True)
-    logger.info("Вебхук удалён")
+    logger.info("Сессия закрыта, вебхук удалён")
 
     for attempt in range(max_retries):
         try:
             await dp.start_polling(bot)
             break
         except Exception as e:
-            if "Conflict" in str(e) or "terminated by other getUpdates" in str(e):
-                logger.warning(f"Конфликт экземпляров, попытка {attempt+1}/{max_retries} через {retry_delay} сек...")
+            error_str = str(e)
+            if "Conflict" in error_str or "terminated by other getUpdates" in error_str:
+                logger.warning(f"Конфликт, попытка {attempt+1}/{max_retries}, пауза {retry_delay:.2f} сек")
                 await asyncio.sleep(retry_delay)
-                retry_delay *= 1.5  # экспоненциальная задержка
+                retry_delay *= 1.5  # экспоненциальный рост
+                # После нескольких попыток попробуем сбросить вебхук ещё раз
+                if attempt % 3 == 2:
+                    await bot.delete_webhook(drop_pending_updates=True)
+                    logger.info("Повторный сброс вебхука")
                 continue
             else:
-                raise e
+                logger.error(f"Неизвестная ошибка: {e}")
+                raise
 
 async def main():
     app = setup_http_server()
@@ -204,7 +200,6 @@ async def main():
     dp.shutdown.register(on_shutdown)
 
     try:
-        # Запускаем бота с повторными попытками
         await start_bot_with_retry()
     finally:
         await runner.cleanup()
