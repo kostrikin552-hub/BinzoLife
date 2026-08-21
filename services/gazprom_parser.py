@@ -10,10 +10,6 @@ from database.models import FuelType, SourceType
 logger = logging.getLogger(__name__)
 
 async def fetch_gazprom_prices(city_name: str = "Красноярск", retries: int = 2):
-    """
-    Парсит цены Газпромнефти для указанного города.
-    Повторяет запрос до retries раз при ошибках.
-    """
     url = "https://www.gazprom-neft.ru/for-motorists/fuel-prices/"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -36,7 +32,6 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
 
             soup = BeautifulSoup(html, 'lxml')
 
-            # Ищем таблицу, содержащую "Аи-95"
             tables = soup.find_all('table')
             target_table = None
             for table in tables:
@@ -56,12 +51,11 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
                 if len(cells) < 3:
                     continue
 
-                # Предполагаем: первая ячейка – город, третья – цена АИ-95
                 city_cell = cells[0]
                 if city_name not in city_cell.text:
                     continue
 
-                price_cell = cells[2]  # предположительно колонка АИ-95
+                price_cell = cells[2]
                 price_text = price_cell.text.strip().replace(',', '.').replace(' ', '')
                 try:
                     price = float(price_text)
@@ -69,7 +63,6 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
                     logger.warning(f"Не удалось распарсить цену: {price_text}")
                     continue
 
-                # Обновляем цены в БД
                 async with AsyncSessionLocal() as db:
                     city = await get_city_by_name(db, city_name)
                     if not city:
