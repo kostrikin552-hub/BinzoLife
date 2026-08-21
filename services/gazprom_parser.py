@@ -1,7 +1,7 @@
 import aiohttp
 import asyncio
-from bs4 import BeautifulSoup
 import logging
+import traceback
 from datetime import datetime, timezone
 from database.session import AsyncSessionLocal
 from database.crud import get_city_by_name, get_stations_by_city, save_price
@@ -22,19 +22,29 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
 
     for attempt in range(retries + 1):
         try:
+            logger.info(f"Попытка {attempt+1} для {city_name}: загрузка страницы...")
+            
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers, ssl=False) as resp:
                     if resp.status != 200:
                         logger.error(f"HTTP {resp.status} для {city_name}")
                         continue
                     html = await resp.text()
+                    logger.info(f"Страница загружена для {city_name}, размер {len(html)} байт")
 
+            from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, 'lxml')
+            
+            # Пробуем найти таблицу разными способами
             tables = soup.find_all('table')
+            logger.info(f"Найдено таблиц: {len(tables)}")
+            
             target_table = None
-            for table in tables:
+            for i, table in enumerate(tables):
+                logger.info(f"Таблица {i+1}: {table.text[:100]}...")
                 if 'Аи-95' in table.text:
                     target_table = table
+                    logger.info(f"Таблица найдена (индекс {i+1})")
                     break
 
             if not target_table:
@@ -42,12 +52,16 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
                 return
 
             rows = target_table.find_all('tr')
+            logger.info(f"Найдено строк в таблице: {len(rows)}")
             found = False
+            
             for row in rows:
                 cells = row.find_all('td')
                 if len(cells) < 3:
                     continue
-                if city_name not in cells[0].text:
+                city_cell_text = cells[0].text.strip()
+                logger.debug(f"Город в строке: {city_cell_text}")
+                if city_name not in city_cell_text:
                     continue
                 price_text = cells[2].text.strip().replace(',', '.').replace(' ', '')
                 try:
@@ -86,7 +100,9 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
             return
 
         except Exception as e:
+            # Выводим полную ошибку с трассировкой
             logger.error(f"Попытка {attempt+1}/{retries+1} для {city_name}: {e}")
+            logger.error(traceback.format_exc())
             if attempt < retries:
                 await asyncio.sleep(5 * (attempt + 1))
             else:
