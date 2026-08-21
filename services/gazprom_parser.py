@@ -18,7 +18,8 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
         "Accept-Encoding": "gzip, deflate, br",
         "Connection": "keep-alive"
     }
-    timeout = aiohttp.ClientTimeout(total=30)
+    # Увеличили таймаут до 60 секунд
+    timeout = aiohttp.ClientTimeout(total=60)
 
     for attempt in range(retries + 1):
         try:
@@ -35,16 +36,14 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
             from bs4 import BeautifulSoup
             soup = BeautifulSoup(html, 'lxml')
             
-            # Пробуем найти таблицу разными способами
             tables = soup.find_all('table')
             logger.info(f"Найдено таблиц: {len(tables)}")
             
             target_table = None
             for i, table in enumerate(tables):
-                logger.info(f"Таблица {i+1}: {table.text[:100]}...")
                 if 'Аи-95' in table.text:
                     target_table = table
-                    logger.info(f"Таблица найдена (индекс {i+1})")
+                    logger.info(f"Таблица с ценами найдена (индекс {i+1})")
                     break
 
             if not target_table:
@@ -60,7 +59,6 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
                 if len(cells) < 3:
                     continue
                 city_cell_text = cells[0].text.strip()
-                logger.debug(f"Город в строке: {city_cell_text}")
                 if city_name not in city_cell_text:
                     continue
                 price_text = cells[2].text.strip().replace(',', '.').replace(' ', '')
@@ -100,7 +98,6 @@ async def fetch_gazprom_prices(city_name: str = "Красноярск", retries:
             return
 
         except Exception as e:
-            # Выводим полную ошибку с трассировкой
             logger.error(f"Попытка {attempt+1}/{retries+1} для {city_name}: {e}")
             logger.error(traceback.format_exc())
             if attempt < retries:
