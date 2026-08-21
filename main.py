@@ -166,20 +166,25 @@ async def on_shutdown():
 # ---------- Функция запуска с повторными попытками ----------
 async def start_bot_with_retry():
     global current_bot
-    max_retries = 30
-    retry_delay = 2.0
+    max_retries = 50
+    retry_delay = 5.0
 
-    # Даём время старому процессу завершиться
-    await asyncio.sleep(5)
+    # Даём 20 секунд старому процессу завершиться
+    logger.info("Ожидание 20 секунд перед запуском...")
+    await asyncio.sleep(20)
 
     for attempt in range(max_retries):
         try:
-            # Создаём нового бота
             bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             current_bot = bot
 
-            # Удаляем вебхук и ждём, чтобы Telegram успел обработать
+            # Принудительно удаляем вебхук и сбрасываем сессию
             await bot.delete_webhook(drop_pending_updates=True)
+            await asyncio.sleep(1)
+            try:
+                await bot.get_updates(offset=-1, timeout=0)
+            except:
+                pass
             await asyncio.sleep(1)
 
             logger.info(f"Запуск polling, попытка {attempt+1}/{max_retries}")
