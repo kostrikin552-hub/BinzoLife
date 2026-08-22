@@ -12,8 +12,7 @@ from database.models import FuelType, SourceType
 logger = logging.getLogger(__name__)
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 2):
-    """Парсит цену АИ-95 с fuelprice.ru для указанного города (только Красноярск)."""
-    # Только Красноярск
+    logger.info(f"--- fetch_fuelprice_prices() вызвана для {city_name}")
     slug = "krasnoyarsk"
     url = f"https://fuelprice.ru/{slug}"
     headers = {
@@ -24,7 +23,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
     for attempt in range(retries + 1):
         try:
-            logger.info(f"Попытка {attempt+1} для {city_name} (fuelprice.ru)...")
+            logger.info(f"Попытка {attempt+1}/{retries+1} для {city_name}, URL: {url}")
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, headers=headers) as resp:
                     if resp.status != 200:
@@ -33,16 +32,13 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     html = await resp.text()
                     logger.info(f"Страница загружена, размер {len(html)} байт")
 
-            # Ищем цену АИ-95 на странице
-            # Пример: "Аи-95 : 67.59 ₽" или "Аи-95: 67.59"
+            # Поиск цены АИ-95
             price_pattern = re.compile(r'Аи-95\s*:\s*([\d.,]+)')
             match = price_pattern.search(html)
             if not match:
-                # Попробуем другой вариант: "АИ-95" (заглавные)
                 price_pattern = re.compile(r'АИ-95\s*:\s*([\d.,]+)')
                 match = price_pattern.search(html)
             if not match:
-                # Если не нашли – пробуем искать в тегах с классом "price"
                 soup = BeautifulSoup(html, 'lxml')
                 price_elem = soup.find('span', class_='price')
                 if price_elem:
@@ -63,7 +59,9 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     logger.error(f"Не удалось распарсить цену: {price_text}")
                     return
 
-            # Обновляем все АЗС в этом городе (упрощённо – для всех станций города)
+            logger.info(f"Найдена цена: {price}")
+
+            # Обновление станций
             async with AsyncSessionLocal() as db:
                 city = await get_city_by_name(db, city_name)
                 if not city:
@@ -86,10 +84,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     )
                     updated += 1
                 logger.info(f"Обновлено {updated} станций в {city_name} (цена {price})")
-            return
+            return  # Успех – выходим
 
         except Exception as e:
-            logger.error(f"Попытка {attempt+1}/{retries+1} для {city_name}: {e}")
+            logger.error(f"Попытка {attempt+1}/{retries+1} для {city_name} не удалась: {e}")
             logger.error(traceback.format_exc())
             if attempt < retries:
                 await asyncio.sleep(5 * (attempt + 1))
