@@ -19,7 +19,7 @@ async def check_notifications():
     async with AsyncSessionLocal() as db:
         notifications = await get_all_active_notifications(db)
         for notif in notifications:
-            # Уведомления о цене (уже есть)
+            # Уведомления о цене
             if notif.notify_on_low_price and notif.target_price:
                 if notif.last_triggered_at:
                     last = ensure_utc(notif.last_triggered_at)
@@ -47,10 +47,8 @@ async def check_notifications():
             if notif.notify_on_availability:
                 station = notif.station
                 if station:
-                    # конкретная АЗС
                     avail = await get_latest_availability(db, station.id, notif.fuel_type)
                     if avail and avail.status == AvailabilityStatus.GREEN:
-                        # проверяем, чтобы не дублировать (если уже отправляли недавно)
                         if notif.last_triggered_at:
                             last = ensure_utc(notif.last_triggered_at)
                             if (datetime.now(timezone.utc) - last).total_seconds() < 3600:
@@ -66,7 +64,6 @@ async def check_notifications():
                         except Exception as e:
                             logger.error(f"Ошибка отправки уведомления: {e}")
                 elif notif.radius_km is not None:
-                    # уведомление по радиусу
                     user = notif.user
                     city = user.city
                     if not city or city.latitude is None:
