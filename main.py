@@ -89,6 +89,98 @@ def setup_http_server():
     app.router.add_post("/internal/tasks/prices", tasks_prices_handler)
     return app
 
+# ---------- Функция обновления схемы БД ----------
+async def ensure_schema_updates():
+    """
+    Добавляет недостающие колонки и таблицы, чтобы избежать ошибок
+    при использовании новых моделей без миграций.
+    """
+    logger.info("Проверка и обновление схемы БД...")
+    async with AsyncSessionLocal() as db:
+        # 1. Колонки в таблице notifications
+        try:
+            await db.execute(text("SELECT radius_km FROM notifications LIMIT 0"))
+        except Exception:
+            await db.execute(text("ALTER TABLE notifications ADD COLUMN radius_km FLOAT"))
+            logger.info("Добавлена колонка radius_km в notifications")
+        # 2. Колонки в таблице users
+        for col, dtype in [
+            ("total_saved", "FLOAT DEFAULT 0"),
+            ("referral_code", "VARCHAR(20) UNIQUE"),
+            ("referred_by", "BIGINT"),
+        ]:
+            try:
+                await db.execute(text(f"SELECT {col} FROM users LIMIT 0"))
+            except Exception:
+                await db.execute(text(f"ALTER TABLE users ADD COLUMN {col} {dtype}"))
+                logger.info(f"Добавлена колонка {col} в users")
+        # 3. Таблица city_slugs
+        try:
+            await db.execute(text("SELECT 1 FROM city_slugs LIMIT 0"))
+        except Exception:
+            await db.execute(text("""
+                CREATE TABLE city_slugs (
+                    city_id INTEGER PRIMARY KEY REFERENCES cities(id),
+                    slug VARCHAR(50) NOT NULL UNIQUE,
+                    parser_source VARCHAR(50) DEFAULT 'fuelprice',
+                    is_active BOOLEAN DEFAULT TRUE
+                )
+            """))
+            logger.info("Создана таблица city_slugs")
+        # 4. Таблица user_achievements
+        try:
+            await db.execute(text("SELECT 1 FROM user_achievements LIMIT 0"))
+        except Exception:
+            await db.execute(text("""
+                CREATE TABLE user_achievements (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    achievement_type VARCHAR(50) NOT NULL,
+                    awarded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    bonus_days_granted INTEGER DEFAULT 0
+                )
+            """))
+            logger.info("Создана таблица user_achievements")
+        # 5. Таблица referrals
+        try:
+            await db.execute(text("SELECT 1 FROM referrals LIMIT 0"))
+        except Exception:
+            await db.execute(text("""
+                CREATE TABLE referrals (
+                    id SERIAL PRIMARY KEY,
+                    referrer_id INTEGER NOT NULL REFERENCES users(id),
+                    referred_user_id INTEGER NOT NULL REFERENCES users(id),
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    is_rewarded BOOLEAN DEFAULT FALSE
+                )
+            """))
+            logger.info("Создана таблица referrals")
+        # 6. Таблица user_economies
+        try:
+            await db.execute(text("SELECT 1 FROM user_economies LIMIT 0"))
+        except Exception:
+            await db.execute(text("""
+                CREATE TABLE user_economies (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER NOT NULL REFERENCES users(id),
+                    station_id INTEGER REFERENCES stations(id),
+                    price_paid FLOAT NOT NULL,
+                    city_avg_price FLOAT NOT NULL,
+                    saved FLOAT NOT NULL,
+                    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                )
+            """))
+            logger.info("Создана таблица user_economies")
+        # 7. Дополнительно: колонка is_fresh в fuel_prices и availability_reports
+        for table, col in [("fuel_prices", "is_fresh"), ("availability_reports", "is_fresh")]:
+            try:
+                await db.execute(text(f"SELECT {col} FROM {table} LIMIT 0"))
+            except Exception:
+                await db.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} BOOLEAN DEFAULT TRUE"))
+                logger.info(f"Добавлена колонка {col} в {table}")
+        await db.commit()
+        logger.info("Обновление схемы БД завершено")
+
 # ---------- Фоновые задачи ----------
 async def expire_old_data_periodically():
     while True:
@@ -107,7 +199,7 @@ async def check_achievements_periodically():
         try:
             async with AsyncSessionLocal() as db:
                 users_with_reports = await db.execute(
-                    select(User.id).distinct().join(AvailabilityReport)
+                    text("SELECT DISTINCT user_id FROM availability_reports WHERE user_id IS NOT NULL")
                 )
                 for (user_id,) in users_with_reports:
                     await check_and_award_achievements(db, user_id)
@@ -213,6 +305,8 @@ async def on_startup():
         from database.models import Base
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
+    # Обновляем схему для новых колонок и таблиц
+    await ensure_schema_updates()
     await seed_initial_data()
     # Запускаем фоновые задачи
     asyncio.create_task(expire_old_data_periodically())
