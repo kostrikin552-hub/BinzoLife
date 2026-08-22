@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
-    Enum, Text, Index, func
+    Enum, Text, Index, func, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship
 import enum
@@ -36,6 +36,15 @@ class City(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     stations = relationship("Station", back_populates="city")
+    city_slug = relationship("CitySlug", back_populates="city", uselist=False)
+
+class CitySlug(Base):
+    __tablename__ = "city_slugs"
+    city_id = Column(Integer, ForeignKey("cities.id"), primary_key=True)
+    slug = Column(String(50), nullable=False, unique=True)
+    parser_source = Column(String(50), default="fuelprice")
+    is_active = Column(Boolean, default=True)
+    city = relationship("City", back_populates="city_slug")
 
 class Station(Base):
     __tablename__ = "stations"
@@ -62,6 +71,7 @@ class FuelPrice(Base):
     source = Column(Enum(SourceType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     confidence = Column(Float, nullable=False, default=0.5)
     recorded_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    is_fresh = Column(Boolean, default=True)
 
     station = relationship("Station", back_populates="prices")
 
@@ -81,6 +91,7 @@ class AvailabilityReport(Base):
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     recorded_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    is_fresh = Column(Boolean, default=True)
 
     station = relationship("Station", back_populates="availability")
     user = relationship("User", back_populates="reports")
@@ -97,12 +108,17 @@ class User(Base):
     is_pro = Column(Boolean, nullable=False, default=False)
     pro_until = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    total_saved = Column(Float, default=0.0)
+    referral_code = Column(String(20), unique=True, nullable=True)
+    referred_by = Column(BigInteger, nullable=True)
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
     notifications = relationship("Notification", back_populates="user")
     payments = relationship("Payment", back_populates="user")
-    reviews = relationship("Review", back_populates="user")  # <-- добавлено
+    reviews = relationship("Review", back_populates="user")
+    achievements = relationship("UserAchievement", back_populates="user")
+    economies = relationship("UserEconomy", back_populates="user")
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -113,6 +129,7 @@ class Notification(Base):
     target_price = Column(Float, nullable=True)
     notify_on_availability = Column(Boolean, nullable=False, default=False)
     notify_on_low_price = Column(Boolean, nullable=False, default=False)
+    radius_km = Column(Float, nullable=True)
     active = Column(Boolean, nullable=False, default=True)
     last_triggered_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -145,13 +162,46 @@ class Payment(Base):
 
     user = relationship("User", back_populates="payments")
 
-# ---------- Новая модель Review ----------
 class Review(Base):
     __tablename__ = "reviews"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    rating = Column(Integer, nullable=False)  # 1-5
+    rating = Column(Integer, nullable=False)
     comment = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User", back_populates="reviews")
+
+class UserAchievement(Base):
+    __tablename__ = "user_achievements"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    achievement_type = Column(String(50), nullable=False)
+    awarded_at = Column(DateTime(timezone=True), server_default=func.now())
+    bonus_days_granted = Column(Integer, default=0)
+
+    user = relationship("User", back_populates="achievements")
+
+class Referral(Base):
+    __tablename__ = "referrals"
+    id = Column(Integer, primary_key=True)
+    referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    referred_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    is_rewarded = Column(Boolean, default=False)
+
+    referrer = relationship("User", foreign_keys=[referrer_id])
+    referred = relationship("User", foreign_keys=[referred_user_id])
+
+class UserEconomy(Base):
+    __tablename__ = "user_economies"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id"), nullable=True)
+    price_paid = Column(Float, nullable=False)
+    city_avg_price = Column(Float, nullable=False)
+    saved = Column(Float, nullable=False)
+    recorded_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    user = relationship("User", back_populates="economies")
+    station = relationship("Station")
