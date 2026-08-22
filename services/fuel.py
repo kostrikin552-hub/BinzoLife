@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def refresh_prices():
-    logger.info(">>> refresh_prices() вызвана")
+    logger.info("=== refresh_prices() ВЫЗВАНА ===")
     city = "Красноярск"
     try:
         logger.info(f"Начинаем парсинг для города {city}")
@@ -12,4 +12,6 @@ async def refresh_prices():
         logger.info(f"Цены для города {city} обновлены")
     except Exception as e:
         logger.error(f"Ошибка парсинга для {city}: {e}")
-    logger.info("<<< refresh_prices() завершена")
+        import traceback
+        logger.error(traceback.format_exc())
+    logger.info("=== refresh_prices() ЗАВЕРШЕНА ===")
