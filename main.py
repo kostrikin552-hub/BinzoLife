@@ -35,16 +35,22 @@ async def health_handler(request):
 
 async def tasks_notifications_handler(request):
     token = request.headers.get("X-Internal-Token")
+    logger.info("Получен запрос на /internal/tasks/notifications")
     if token != settings.INTERNAL_TOKEN:
+        logger.warning("Неверный токен для уведомлений")
         return web.Response(status=403, text="Forbidden")
     await check_notifications()
     return web.Response(text='{"status":"notifications_checked"}', content_type='application/json')
 
 async def tasks_prices_handler(request):
     token = request.headers.get("X-Internal-Token")
+    logger.info(f"Получен запрос на /internal/tasks/prices, токен: {token[:6] if token else 'None'}...")
     if token != settings.INTERNAL_TOKEN:
+        logger.warning("Неверный токен для парсинга")
         return web.Response(status=403, text="Forbidden")
+    logger.info("Токен верный, запускаем refresh_prices в фоне")
     asyncio.create_task(refresh_prices())
+    logger.info("Задача refresh_prices успешно запущена")
     return web.Response(text='{"status":"started"}', content_type='application/json')
 
 def setup_http_server():
@@ -166,19 +172,17 @@ async def on_shutdown():
 # ---------- Функция запуска с повторными попытками ----------
 async def start_bot_with_retry():
     global current_bot
-    max_retries = 50
-    retry_delay = 5.0
+    max_retries = 30
+    retry_delay = 3.0
 
-    # Даём 20 секунд старому процессу завершиться
-    logger.info("Ожидание 20 секунд перед запуском...")
-    await asyncio.sleep(20)
+    # Даём время старому процессу завершиться
+    await asyncio.sleep(10)
 
     for attempt in range(max_retries):
         try:
             bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
             current_bot = bot
 
-            # Принудительно удаляем вебхук и сбрасываем сессию
             await bot.delete_webhook(drop_pending_updates=True)
             await asyncio.sleep(1)
             try:
