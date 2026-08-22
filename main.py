@@ -48,10 +48,17 @@ async def tasks_prices_handler(request):
     if token != settings.INTERNAL_TOKEN:
         logger.warning("Неверный токен для парсинга")
         return web.Response(status=403, text="Forbidden")
-    logger.info("Токен верный, запускаем refresh_prices в фоне")
-    asyncio.create_task(refresh_prices())
-    logger.info("Задача refresh_prices успешно запущена")
-    return web.Response(text='{"status":"started"}', content_type='application/json')
+    
+    logger.info("Токен верный, запускаем refresh_prices СИНХРОННО для диагностики")
+    try:
+        await refresh_prices()   # ждём завершения, чтобы увидеть логи
+        logger.info("refresh_prices завершена успешно")
+        return web.Response(text='{"status":"done"}', content_type='application/json')
+    except Exception as e:
+        logger.error(f"Ошибка в refresh_prices: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return web.Response(text='{"status":"error"}', content_type='application/json')
 
 def setup_http_server():
     app = web.Application()
@@ -175,7 +182,6 @@ async def start_bot_with_retry():
     max_retries = 30
     retry_delay = 3.0
 
-    # Даём время старому процессу завершиться
     await asyncio.sleep(10)
 
     for attempt in range(max_retries):
