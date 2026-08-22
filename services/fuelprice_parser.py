@@ -11,21 +11,10 @@ from database.models import FuelType, SourceType
 
 logger = logging.getLogger(__name__)
 
-# Транслитерация городов для URL fuelprice.ru
-CITY_SLUGS = {
-    "Красноярск": "krasnoyarsk",
-    "Ефремов": "efremov",
-    "Тула": "tula",
-    "Москва": "moscow",
-    "Новомосковск": "novomoskovsk",
-}
-
-async def fetch_fuelprice_prices(city_name: str, retries: int = 2):
-    slug = CITY_SLUGS.get(city_name)
-    if not slug:
-        logger.error(f"Неизвестный город: {city_name}")
-        return
-
+async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 2):
+    """Парсит цену АИ-95 с fuelprice.ru для указанного города (только Красноярск)."""
+    # Только Красноярск
+    slug = "krasnoyarsk"
     url = f"https://fuelprice.ru/{slug}"
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -44,32 +33,46 @@ async def fetch_fuelprice_prices(city_name: str, retries: int = 2):
                     html = await resp.text()
                     logger.info(f"Страница загружена, размер {len(html)} байт")
 
-            soup = BeautifulSoup(html, 'lxml')
-
-            # Ищем цену АИ-95 – на сайте она обычно в формате "Аи-95 : 67.59 ₽"
-            # Используем регулярное выражение, чтобы найти первое вхождение
+            # Ищем цену АИ-95 на странице
+            # Пример: "Аи-95 : 67.59 ₽" или "Аи-95: 67.59"
             price_pattern = re.compile(r'Аи-95\s*:\s*([\d.,]+)')
             match = price_pattern.search(html)
-            if match:
-                price_text = match.group(1).replace(',', '.').replace(' ', '')
-                price = float(price_text)
-            else:
-                # Если не нашли – пробуем найти в тегах с классом "price"
+            if not match:
+                # Попробуем другой вариант: "АИ-95" (заглавные)
+                price_pattern = re.compile(r'АИ-95\s*:\s*([\d.,]+)')
+                match = price_pattern.search(html)
+            if not match:
+                # Если не нашли – пробуем искать в тегах с классом "price"
+                soup = BeautifulSoup(html, 'lxml')
                 price_elem = soup.find('span', class_='price')
                 if price_elem:
                     price_text = price_elem.text.strip().replace(',', '.').replace(' ', '')
-                    price = float(price_text)
+                    try:
+                        price = float(price_text)
+                    except ValueError:
+                        logger.error(f"Не удалось распарсить цену из span: {price_text}")
+                        return
                 else:
                     logger.error(f"Не найдена цена АИ-95 для {city_name}")
                     return
+            else:
+                price_text = match.group(1).replace(',', '.').replace(' ', '')
+                try:
+                    price = float(price_text)
+                except ValueError:
+                    logger.error(f"Не удалось распарсить цену: {price_text}")
+                    return
 
-            # Обновляем все АЗС в этом городе (упрощённо)
+            # Обновляем все АЗС в этом городе (упрощённо – для всех станций города)
             async with AsyncSessionLocal() as db:
                 city = await get_city_by_name(db, city_name)
                 if not city:
                     logger.warning(f"Город {city_name} не найден в БД")
                     return
                 stations = await get_stations_by_city(db, city.id)
+                if not stations:
+                    logger.warning(f"В городе {city_name} нет АЗС в БД")
+                    return
                 updated = 0
                 for station in stations:
                     await save_price(
