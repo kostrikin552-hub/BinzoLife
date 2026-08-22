@@ -2,12 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Копируем зависимости и устанавливаем их
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Копируем весь проект
+# Форсируем пересборку – эта строка всегда новая, чтобы Render не использовал кеш
+RUN echo "Build timestamp: $(date)"
+
 COPY . .
 
-# Запускаем бота
 CMD ["python", "-m", "main"]
