@@ -10,15 +10,15 @@ from sqlalchemy import text, func
 from config import settings
 from database.session import engine, AsyncSessionLocal
 from database.models import Base, City, Station, FuelPrice, AvailabilityReport, FuelType, AvailabilityStatus, SourceType
-from handlers import start, menu, find, profile, admin, notifications, common, payments, review
+from handlers import start, menu, find, profile, admin, notifications, common, payments, review, emergency
 from services.notifications import check_notifications
 from services.fuel import refresh_prices
+from database.crud import expire_old_prices, expire_old_availability, check_and_award_achievements
+from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
-# Создаём бота здесь, чтобы он был доступен во всех обработчиках
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-current_bot = None
 dp = Dispatcher()
 
 dp.include_router(start.router)
@@ -29,6 +29,7 @@ dp.include_router(notifications.router)
 dp.include_router(admin.router)
 dp.include_router(payments.router)
 dp.include_router(review.router)
+dp.include_router(emergency.router)
 dp.include_router(common.router)
 
 # ---------- HTTP ----------
@@ -46,13 +47,10 @@ async def tasks_notifications_handler(request):
 
 async def tasks_prices_handler(request):
     token = request.headers.get("X-Internal-Token")
-    
-    # Отправляем уведомление в Telegram при любом вызове
     try:
         await bot.send_message(settings.ADMIN_ID, f"🔔 Получен запрос на /internal/tasks/prices, токен: {token[:6] if token else 'None'}...")
     except Exception as e:
         logger.error(f"Не удалось отправить уведомление: {e}")
-    
     if token != settings.INTERNAL_TOKEN:
         logger.warning("Неверный токен для парсинга")
         try:
@@ -60,14 +58,11 @@ async def tasks_prices_handler(request):
         except:
             pass
         return web.Response(status=403, text="Forbidden")
-    
     try:
         await bot.send_message(settings.ADMIN_ID, "✅ Токен верный, запускаем парсинг")
     except:
         pass
-    
-    logger.info("Токен верный, запускаем refresh_prices синхронно")
-    
+    logger.info("Токен верный, запускаем refresh_prices")
     try:
         await refresh_prices()
         logger.info("refresh_prices завершена успешно")
@@ -94,7 +89,33 @@ def setup_http_server():
     app.router.add_post("/internal/tasks/prices", tasks_prices_handler)
     return app
 
-# ---------- Функция для загрузки начальных данных ----------
+# ---------- Фоновые задачи ----------
+async def expire_old_data_periodically():
+    while True:
+        await asyncio.sleep(1800)  # 30 минут
+        try:
+            async with AsyncSessionLocal() as db:
+                await expire_old_prices(db, hours=12)
+                await expire_old_availability(db, hours=2)
+            logger.info("Устаревшие данные помечены is_fresh=False")
+        except Exception as e:
+            logger.error(f"Ошибка в expire_old_data_periodically: {e}")
+
+async def check_achievements_periodically():
+    while True:
+        await asyncio.sleep(3600)  # час
+        try:
+            async with AsyncSessionLocal() as db:
+                users_with_reports = await db.execute(
+                    select(User.id).distinct().join(AvailabilityReport)
+                )
+                for (user_id,) in users_with_reports:
+                    await check_and_award_achievements(db, user_id)
+            logger.info("Достижения проверены")
+        except Exception as e:
+            logger.error(f"Ошибка в check_achievements_periodically: {e}")
+
+# ---------- Загрузка начальных данных ----------
 async def seed_initial_data():
     async with AsyncSessionLocal() as db:
         city_updated = False
@@ -193,7 +214,10 @@ async def on_startup():
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
     await seed_initial_data()
-    logger.info("Бот запущен")
+    # Запускаем фоновые задачи
+    asyncio.create_task(expire_old_data_periodically())
+    asyncio.create_task(check_achievements_periodically())
+    logger.info("Бот запущен, фоновые задачи активны")
 
 async def on_shutdown():
     global current_bot
@@ -203,19 +227,14 @@ async def on_shutdown():
     await engine.dispose()
     logger.info("Бот остановлен")
 
-# ---------- Функция запуска с повторными попытками ----------
+# ---------- Запуск с повторными попытками ----------
 async def start_bot_with_retry():
     global current_bot
     max_retries = 30
     retry_delay = 3.0
-
     await asyncio.sleep(10)
-
     for attempt in range(max_retries):
         try:
-            # Используем существующий объект bot, но он уже создан глобально.
-            # Чтобы избежать конфликтов, будем использовать его.
-            # Удаляем вебхук и сбрасываем сессию
             await bot.delete_webhook(drop_pending_updates=True)
             await asyncio.sleep(1)
             try:
@@ -223,7 +242,6 @@ async def start_bot_with_retry():
             except:
                 pass
             await asyncio.sleep(1)
-
             logger.info(f"Запуск polling, попытка {attempt+1}/{max_retries}")
             await dp.start_polling(bot)
             break
@@ -245,10 +263,8 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', settings.PORT)
     await site.start()
     logger.info(f"HTTP сервер запущен на порту {settings.PORT}")
-
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
-
     try:
         await start_bot_with_retry()
     finally:
