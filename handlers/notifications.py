@@ -8,7 +8,7 @@ from database.crud import (
 )
 from database.models import FuelType
 from keyboards.reply import main_menu_keyboard
-from keyboards.inline import notification_action_keyboard
+from keyboards.inline import notification_action_keyboard, pro_purchase_keyboard
 from services.subscription import check_pro
 
 router = Router()
@@ -22,7 +22,7 @@ async def list_notifications(message: types.Message):
         await message.answer(
             "🔔 Уведомления доступны только в PRO-подписке.\n"
             "Купите PRO за 99 ₽/месяц, чтобы получать уведомления о ценах и наличии.",
-            reply_markup=main_menu_keyboard()
+            reply_markup=pro_purchase_keyboard()
         )
         return
     async with AsyncSessionLocal() as db:
@@ -32,7 +32,7 @@ async def list_notifications(message: types.Message):
             return
         notifs = await get_active_notifications_for_user(db, user.id)
         if not notifs:
-            await message.answer("У вас нет активных уведомлений.\nЧтобы создать, нажмите «Следить за ценой» при поиске АЗС.")
+            await message.answer("У вас нет активных уведомлений.\nЧтобы создать, нажмите «Следить за ценой» или «Увед. о появлении» при поиске АЗС.")
         else:
             for n in notifs:
                 text = f"🔔 Уведомление #{n.id}: {n.fuel_type.value}"
@@ -40,6 +40,8 @@ async def list_notifications(message: types.Message):
                     text += f", цена ≤ {n.target_price} ₽"
                 if n.notify_on_availability:
                     text += ", при появлении наличия"
+                if n.radius_km:
+                    text += f", радиус {n.radius_km} км"
                 await message.answer(text, reply_markup=notification_action_keyboard(n.id))
         await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
 
