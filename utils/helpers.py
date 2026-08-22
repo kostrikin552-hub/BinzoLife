@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timezone
+from utils.time_utils import ensure_utc
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371
@@ -12,9 +13,8 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 def format_time_ago(dt: datetime) -> str:
     if not dt:
         return "неизвестно"
+    dt = ensure_utc(dt)
     now = datetime.now(timezone.utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
     diff = now - dt
     seconds = diff.total_seconds()
     if seconds < 60:
