@@ -7,7 +7,9 @@ from datetime import datetime, timedelta, timezone
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, log_action, get_city_by_id, get_station_by_id,
-    get_latest_price, create_notification, save_price
+    get_latest_price, create_notification, save_price,
+    get_latest_fresh_price, get_latest_fresh_availability,
+    save_availability_report_with_consensus
 )
 from database.models import FuelType, AvailabilityStatus, SourceType, Station, FuelPrice, AvailabilityReport
 from services.rating import calculate_rating
@@ -15,7 +17,7 @@ from services.subscription import check_pro
 from services.graphics import generate_price_graph
 from utils.helpers import status_emoji, format_time_ago
 from keyboards.reply import main_menu_keyboard, fuel_choice_keyboard
-from keyboards.inline import station_action_keyboard, pro_purchase_keyboard
+from keyboards.inline import station_action_keyboard, pro_purchase_keyboard, notification_action_keyboard
 
 router = Router()
 
@@ -25,7 +27,6 @@ class FindStates(StatesGroup):
 class ReportPriceStates(StatesGroup):
     waiting_price = State()
 
-# ---------- Поиск АЗС ----------
 @router.message(F.text == "⛽ Найти заправку")
 async def start_find(message: types.Message, state: FSMContext):
     await state.set_state(FindStates.choosing_fuel)
@@ -72,10 +73,10 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Последние цены
+        # Последние свежие цены
         price_subq = (
             select(FuelPrice.station_id, FuelPrice.fuel_type, func.max(FuelPrice.recorded_at).label("max_date"))
-            .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type)
+            .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type, FuelPrice.is_fresh == True)
             .group_by(FuelPrice.station_id, FuelPrice.fuel_type)
             .subquery()
         )
@@ -89,10 +90,10 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         price_result = await db.execute(price_stmt)
         prices = {p.station_id: p for p in price_result.scalars().all()}
 
-        # Последние отчёты о наличии
+        # Последние свежие отчёты о наличии
         avail_subq = (
             select(AvailabilityReport.station_id, AvailabilityReport.fuel_type, func.max(AvailabilityReport.recorded_at).label("max_date"))
-            .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type)
+            .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type, AvailabilityReport.is_fresh == True)
             .group_by(AvailabilityReport.station_id, AvailabilityReport.fuel_type)
             .subquery()
         )
@@ -162,7 +163,7 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             text = (
                 f"🏆 Рейтинг: {data['rating']}/100\n"
                 f"⛽ {station.name}\n"
-                f"📍 {station.address}\n"          # <-- ДОБАВЛЕНА СТРОКА С АДРЕСОМ
+                f"📍 {station.address}\n"
                 f"💰 {data['price']:.2f} ₽ (обновлено {price_time})\n"
                 f"{status_text} Наличие: {data['availability'].value if data['availability'] else 'GRAY'} ({status_time})\n"
                 f"📍 {data['distance_km']} км (по прямой) | ~{data['drive_time_min']} мин\n"
@@ -175,7 +176,8 @@ async def choose_fuel(message: types.Message, state: FSMContext):
                     data["price"],
                     data["availability"],
                     station.latitude,
-                    station.longitude
+                    station.longitude,
+                    city_id
                 )
             )
             await log_action(db, user.id, "search_result", station.id)
@@ -215,7 +217,7 @@ async def follow_price(callback: types.CallbackQuery):
             await callback.message.answer("АЗС не найдена.")
             return
         
-        latest_price = await get_latest_price(db, station_id, FuelType.AI_95)
+        latest_price = await get_latest_fresh_price(db, station_id, FuelType.AI_95)
         if not latest_price:
             await callback.message.answer("Не удалось получить текущую цену.")
             return
@@ -228,14 +230,40 @@ async def follow_price(callback: types.CallbackQuery):
             fuel_type=FuelType.AI_95,
             station_id=station_id,
             target_price=target_price,
-            notify_on_availability=False,
-            notify_on_low_price=False
+            notify_on_low_price=True
         )
         await callback.message.answer(
             f"✅ Подписка на цену на АЗС <b>{station.name}</b> активирована.\n"
             f"Я сообщу, когда цена станет ≤ {target_price} ₽.\n"
             f"(Вы можете отписаться в разделе «Мои уведомления».)"
         )
+
+# ---------- Уведомления о появлении (PRO) ----------
+@router.callback_query(lambda c: c.data.startswith("alert_avail_"))
+async def subscribe_availability(callback: types.CallbackQuery):
+    await callback.answer()
+    station_id = int(callback.data.split("_")[2])
+    if not await check_pro(callback.from_user.id):
+        await callback.answer("Доступно только в PRO", show_alert=True)
+        return
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.answer("Сначала /start")
+            return
+        station = await get_station_by_id(db, station_id)
+        if not station:
+            await callback.answer("АЗС не найдена")
+            return
+        await create_notification(
+            db,
+            user_id=user.id,
+            fuel_type=FuelType.AI_95,
+            station_id=station_id,
+            notify_on_availability=True
+        )
+    await callback.answer("Вы подписаны на уведомления о появлении топлива на этой АЗС")
+    await callback.message.answer(f"🔔 Вы будете получать уведомления, когда на {station.name} появится АИ-95.")
 
 # ---------- Сообщить цену (краудсорсинг) ----------
 @router.callback_query(lambda c: c.data.startswith("report_price_"))
@@ -282,7 +310,7 @@ async def process_report_price(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Сохраняем цену от пользователя
+        # сохраняем цену
         await save_price(
             db,
             station_id=station_id,
@@ -291,7 +319,7 @@ async def process_report_price(message: types.Message, state: FSMContext):
             source=SourceType.USER,
             confidence=0.6
         )
-        # Начисляем репутацию
+        # обновляем репутацию
         user.reputation += 1
         await db.commit()
 
