@@ -1,17 +1,22 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def station_action_keyboard(station_id: int, price: float, availability_status: str, lat: float, lon: float):
+def station_action_keyboard(station_id: int, price: float, availability_status: str, lat: float, lon: float, city_id: int = None):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
-    return InlineKeyboardMarkup(inline_keyboard=[
+    buttons = [
         [
             InlineKeyboardButton(text="🚗 Маршрут", url=yandex_url),
             InlineKeyboardButton(text="🔔 Следить за ценой", callback_data=f"follow_{station_id}"),
             InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")
         ],
         [
-            InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}")
+            InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}"),
+            InlineKeyboardButton(text="🟢 Увед. о появлении", callback_data=f"alert_avail_{station_id}")
         ]
-    ])
+    ]
+    if city_id:
+        map_url = f"https://yandex.ru/maps/?mode=search&text=АЗС&ll={lon},{lat}&z=13"
+        buttons.append([InlineKeyboardButton(text="🗺 Показать все АЗС на карте", url=map_url)])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def notification_action_keyboard(notif_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
