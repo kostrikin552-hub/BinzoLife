@@ -1,3 +1,12 @@
+from aiogram import Router, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from database.crud import get_user, create_user, get_city_by_name, apply_referral
+from database.session import AsyncSessionLocal
+from keyboards.reply import main_menu_keyboard
+
+router = Router()  # <-- ОБЯЗАТЕЛЬНО
+
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -13,11 +22,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
             if city:
                 user.city_id = city.id
                 await db.commit()
-            # применяем рефералку, если есть
             if ref_code:
                 await apply_referral(db, user.id, ref_code)
         elif ref_code:
-            # если пользователь уже есть, но пришёл по ссылке — всё равно пробуем применить (если не применял)
+            # если пользователь уже есть, но пришёл по ссылке — всё равно пробуем применить
             await apply_referral(db, user.id, ref_code)
 
     await message.answer(
