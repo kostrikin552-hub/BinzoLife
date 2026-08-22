@@ -5,9 +5,9 @@ from aiogram.filters import Command
 from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
-    get_city_by_name, create_station, save_price, save_availability_report,
-    get_user, get_station_by_id, deactivate_station, activate_pro,
-    get_station_by_name_address, get_all_reviews, get_avg_rating
+    get_city_by_name, create_station, save_price, get_user, get_station_by_id,
+    deactivate_station, activate_pro, get_station_by_name_address, get_all_reviews,
+    get_avg_rating, set_city_slug, save_availability_report_with_consensus
 )
 from database.models import SourceType, AvailabilityStatus, FuelType
 
@@ -42,6 +42,25 @@ async def add_city_cmd(message: types.Message):
             db.add(new_city)
             await db.commit()
             await message.answer(f"Город {name} добавлен.")
+
+@router.message(Command("set_slug"))
+async def set_slug_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+    parts = message.text.split()
+    if len(parts) < 3:
+        await message.answer("Использование: /set_slug Город slug")
+        return
+    city_name = parts[1]
+    slug = parts[2]
+    async with AsyncSessionLocal() as db:
+        city = await get_city_by_name(db, city_name)
+        if not city:
+            await message.answer(f"Город {city_name} не найден.")
+            return
+        await set_city_slug(db, city.id, slug)
+        await message.answer(f"Слаг для {city_name} установлен: {slug}")
 
 @router.message(Command("add_station"))
 async def add_station_cmd(message: types.Message):
@@ -125,7 +144,9 @@ async def set_availability_cmd(message: types.Message):
             await message.answer("АЗС не найдена.")
             return
         fuel = FuelType.AI_95
-        await save_availability_report(db, station_id, fuel, status, SourceType.ADMIN, confidence=0.9)
+        await save_availability_report_with_consensus(
+            db, station_id, fuel, status, SourceType.ADMIN, confidence=0.9
+        )
         await message.answer(f"Статус наличия для {station.name} установлен: {status.value}")
 
 @router.message(Command("deactivate_station"))
@@ -210,7 +231,9 @@ async def handle_csv_file(message: types.Message):
                 
                 if price > 0:
                     await save_price(db, station.id, FuelType.AI_95, price, SourceType.ADMIN, confidence=0.8)
-                await save_availability_report(db, station.id, FuelType.AI_95, status, SourceType.ADMIN, confidence=0.8)
+                await save_availability_report_with_consensus(
+                    db, station.id, FuelType.AI_95, status, SourceType.ADMIN, confidence=0.8
+                )
         await message.answer("CSV импортирован успешно.")
 
 @router.message(Command("set_pro"))
