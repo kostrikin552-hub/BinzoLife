@@ -17,7 +17,7 @@ from services.subscription import check_pro
 from services.graphics import generate_price_graph
 from utils.helpers import status_emoji, format_time_ago
 from keyboards.reply import main_menu_keyboard, fuel_choice_keyboard
-from keyboards.inline import station_action_keyboard, pro_purchase_keyboard, notification_action_keyboard
+from keyboards.inline import station_action_keyboard, pro_purchase_keyboard
 
 router = Router()
 
@@ -334,7 +334,10 @@ async def process_report_price(message: types.Message, state: FSMContext):
 async def cancel_report(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    await callback.message.edit_text("Отмена. Главное меню:", reply_markup=main_menu_keyboard())
+    # Удаляем сообщение с инлайн-клавиатурой
+    await callback.message.delete()
+    # Отправляем новое сообщение с Reply-клавиатурой
+    await callback.message.answer("Отмена. Главное меню:", reply_markup=main_menu_keyboard())
 
 # ---------- График цен (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("graph_"))
