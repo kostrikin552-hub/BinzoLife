@@ -162,6 +162,7 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             text = (
                 f"🏆 Рейтинг: {data['rating']}/100\n"
                 f"⛽ {station.name}\n"
+                f"📍 {station.address}\n"          # <-- ДОБАВЛЕНА СТРОКА С АДРЕСОМ
                 f"💰 {data['price']:.2f} ₽ (обновлено {price_time})\n"
                 f"{status_text} Наличие: {data['availability'].value if data['availability'] else 'GRAY'} ({status_time})\n"
                 f"📍 {data['distance_km']} км (по прямой) | ~{data['drive_time_min']} мин\n"
