@@ -4,11 +4,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def refresh_prices():
-    """Обновляет цены для Красноярска через FuelPrice.ru"""
+    logger.info(">>> refresh_prices() вызвана")
     city = "Красноярск"
     try:
+        logger.info(f"Начинаем парсинг для города {city}")
         await fetch_fuelprice_prices(city)
         logger.info(f"Цены для города {city} обновлены")
     except Exception as e:
         logger.error(f"Ошибка парсинга для {city}: {e}")
-    logger.info("Обновление цен завершено")
+    logger.info("<<< refresh_prices() завершена")
