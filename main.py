@@ -6,6 +6,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
 from sqlalchemy import text, func
+from sqlalchemy.exc import ProgrammingError
 
 from config import settings
 from database.session import engine, AsyncSessionLocal
@@ -89,97 +90,111 @@ def setup_http_server():
     app.router.add_post("/internal/tasks/prices", tasks_prices_handler)
     return app
 
-# ---------- Функция обновления схемы БД ----------
+# ---------- Функция обновления схемы БД (исправленная) ----------
 async def ensure_schema_updates():
     """
-    Добавляет недостающие колонки и таблицы, чтобы избежать ошибок
-    при использовании новых моделей без миграций.
+    Добавляет недостающие колонки и таблицы, используя отдельные сессии для каждой операции,
+    чтобы избежать ошибок aborted transaction.
     """
     logger.info("Проверка и обновление схемы БД...")
-    async with AsyncSessionLocal() as db:
-        # 1. Колонки в таблице notifications
-        try:
-            await db.execute(text("SELECT radius_km FROM notifications LIMIT 0"))
-        except Exception:
-            await db.execute(text("ALTER TABLE notifications ADD COLUMN radius_km FLOAT"))
-            logger.info("Добавлена колонка radius_km в notifications")
-        # 2. Колонки в таблице users
-        for col, dtype in [
-            ("total_saved", "FLOAT DEFAULT 0"),
-            ("referral_code", "VARCHAR(20) UNIQUE"),
-            ("referred_by", "BIGINT"),
-        ]:
+
+    # Вспомогательная функция для выполнения ALTER в отдельной сессии
+    async def add_column_if_not_exists(table: str, column: str, col_type: str, default: str = ""):
+        async with AsyncSessionLocal() as db:
+            # Проверяем существование колонки через выборку
             try:
-                await db.execute(text(f"SELECT {col} FROM users LIMIT 0"))
-            except Exception:
-                await db.execute(text(f"ALTER TABLE users ADD COLUMN {col} {dtype}"))
-                logger.info(f"Добавлена колонка {col} в users")
-        # 3. Таблица city_slugs
-        try:
-            await db.execute(text("SELECT 1 FROM city_slugs LIMIT 0"))
-        except Exception:
-            await db.execute(text("""
-                CREATE TABLE city_slugs (
-                    city_id INTEGER PRIMARY KEY REFERENCES cities(id),
-                    slug VARCHAR(50) NOT NULL UNIQUE,
-                    parser_source VARCHAR(50) DEFAULT 'fuelprice',
-                    is_active BOOLEAN DEFAULT TRUE
-                )
-            """))
-            logger.info("Создана таблица city_slugs")
-        # 4. Таблица user_achievements
-        try:
-            await db.execute(text("SELECT 1 FROM user_achievements LIMIT 0"))
-        except Exception:
-            await db.execute(text("""
-                CREATE TABLE user_achievements (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id),
-                    achievement_type VARCHAR(50) NOT NULL,
-                    awarded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    bonus_days_granted INTEGER DEFAULT 0
-                )
-            """))
-            logger.info("Создана таблица user_achievements")
-        # 5. Таблица referrals
-        try:
-            await db.execute(text("SELECT 1 FROM referrals LIMIT 0"))
-        except Exception:
-            await db.execute(text("""
-                CREATE TABLE referrals (
-                    id SERIAL PRIMARY KEY,
-                    referrer_id INTEGER NOT NULL REFERENCES users(id),
-                    referred_user_id INTEGER NOT NULL REFERENCES users(id),
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                    is_rewarded BOOLEAN DEFAULT FALSE
-                )
-            """))
-            logger.info("Создана таблица referrals")
-        # 6. Таблица user_economies
-        try:
-            await db.execute(text("SELECT 1 FROM user_economies LIMIT 0"))
-        except Exception:
-            await db.execute(text("""
-                CREATE TABLE user_economies (
-                    id SERIAL PRIMARY KEY,
-                    user_id INTEGER NOT NULL REFERENCES users(id),
-                    station_id INTEGER REFERENCES stations(id),
-                    price_paid FLOAT NOT NULL,
-                    city_avg_price FLOAT NOT NULL,
-                    saved FLOAT NOT NULL,
-                    recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                )
-            """))
-            logger.info("Создана таблица user_economies")
-        # 7. Дополнительно: колонка is_fresh в fuel_prices и availability_reports
-        for table, col in [("fuel_prices", "is_fresh"), ("availability_reports", "is_fresh")]:
+                await db.execute(text(f"SELECT {column} FROM {table} LIMIT 0"))
+                # Колонка существует
+                return
+            except Exception as e:
+                # Если ошибка говорит о том, что колонки нет, добавляем
+                if "does not exist" in str(e) or "UndefinedColumnError" in str(e):
+                    # Откатываем транзакцию (она в состоянии ошибки)
+                    await db.rollback()
+                    # Теперь в новой транзакции выполняем ALTER
+                    async with AsyncSessionLocal() as db2:
+                        try:
+                            if default:
+                                await db2.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type} DEFAULT {default}"))
+                            else:
+                                await db2.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {col_type}"))
+                            await db2.commit()
+                            logger.info(f"Добавлена колонка {column} в {table}")
+                        except Exception as alter_e:
+                            logger.error(f"Не удалось добавить колонку {column} в {table}: {alter_e}")
+                            await db2.rollback()
+                else:
+                    logger.error(f"Ошибка при проверке колонки {column} в {table}: {e}")
+
+    async def create_table_if_not_exists(table_name: str, create_sql: str):
+        async with AsyncSessionLocal() as db:
             try:
-                await db.execute(text(f"SELECT {col} FROM {table} LIMIT 0"))
+                await db.execute(text(f"SELECT 1 FROM {table_name} LIMIT 0"))
+                # таблица существует
+                return
             except Exception:
-                await db.execute(text(f"ALTER TABLE {table} ADD COLUMN {col} BOOLEAN DEFAULT TRUE"))
-                logger.info(f"Добавлена колонка {col} в {table}")
-        await db.commit()
-        logger.info("Обновление схемы БД завершено")
+                await db.rollback()
+                async with AsyncSessionLocal() as db2:
+                    try:
+                        await db2.execute(text(create_sql))
+                        await db2.commit()
+                        logger.info(f"Создана таблица {table_name}")
+                    except Exception as e:
+                        logger.error(f"Не удалось создать таблицу {table_name}: {e}")
+                        await db2.rollback()
+
+    # 1. Колонки в notifications
+    await add_column_if_not_exists("notifications", "radius_km", "FLOAT")
+
+    # 2. Колонки в users
+    await add_column_if_not_exists("users", "total_saved", "FLOAT", "0")
+    await add_column_if_not_exists("users", "referral_code", "VARCHAR(20)")
+    await add_column_if_not_exists("users", "referred_by", "BIGINT")
+
+    # 3. Таблицы
+    await create_table_if_not_exists("city_slugs", """
+        CREATE TABLE city_slugs (
+            city_id INTEGER PRIMARY KEY REFERENCES cities(id),
+            slug VARCHAR(50) NOT NULL UNIQUE,
+            parser_source VARCHAR(50) DEFAULT 'fuelprice',
+            is_active BOOLEAN DEFAULT TRUE
+        )
+    """)
+    await create_table_if_not_exists("user_achievements", """
+        CREATE TABLE user_achievements (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            achievement_type VARCHAR(50) NOT NULL,
+            awarded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            bonus_days_granted INTEGER DEFAULT 0
+        )
+    """)
+    await create_table_if_not_exists("referrals", """
+        CREATE TABLE referrals (
+            id SERIAL PRIMARY KEY,
+            referrer_id INTEGER NOT NULL REFERENCES users(id),
+            referred_user_id INTEGER NOT NULL REFERENCES users(id),
+            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+            is_rewarded BOOLEAN DEFAULT FALSE
+        )
+    """)
+    await create_table_if_not_exists("user_economies", """
+        CREATE TABLE user_economies (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id),
+            station_id INTEGER REFERENCES stations(id),
+            price_paid FLOAT NOT NULL,
+            city_avg_price FLOAT NOT NULL,
+            saved FLOAT NOT NULL,
+            recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+        )
+    """)
+
+    # 4. Колонка is_fresh в fuel_prices и availability_reports
+    await add_column_if_not_exists("fuel_prices", "is_fresh", "BOOLEAN", "TRUE")
+    await add_column_if_not_exists("availability_reports", "is_fresh", "BOOLEAN", "TRUE")
+
+    logger.info("Обновление схемы БД завершено")
 
 # ---------- Фоновые задачи ----------
 async def expire_old_data_periodically():
