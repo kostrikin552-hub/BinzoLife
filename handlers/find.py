@@ -193,17 +193,19 @@ async def go_profile_callback(callback: types.CallbackQuery):
     from handlers.profile import show_profile
     await show_profile(callback.message)
 
-# ---------- Следить за ценой ----------
+# ---------- Следить за ценой (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("follow_"))
 async def follow_price(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] follow_ вызван: {callback.data}")
     await callback.answer()
-    await callback.message.answer("🔧 Обработчик follow_ сработал")
     station_id = int(callback.data.split("_")[1])
-    # Временно отключаем проверку PRO для диагностики
-    # if not await check_pro(callback.from_user.id):
-    #     await callback.message.answer("🔔 Уведомления доступны только в PRO.", reply_markup=pro_purchase_keyboard())
-    #     return
+    if not await check_pro(callback.from_user.id):
+        await callback.message.answer(
+            "🔔 Уведомления доступны только в PRO.\n"
+            "Купите PRO за 99 ₽/месяц, чтобы получать оповещения о ценах.",
+            reply_markup=pro_purchase_keyboard()
+        )
+        return
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
@@ -228,19 +230,19 @@ async def follow_price(callback: types.CallbackQuery):
         )
         await callback.message.answer(
             f"✅ Подписка на цену на АЗС <b>{station.name}</b> активирована.\n"
-            f"Я сообщу, когда цена станет ≤ {target_price} ₽."
+            f"Я сообщу, когда цена станет ≤ {target_price} ₽.\n"
+            f"(Отписаться можно в разделе «Мои уведомления».)"
         )
 
-# ---------- Уведомления о появлении ----------
+# ---------- Уведомления о появлении (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("alert_avail_"))
 async def subscribe_availability(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
-    await callback.message.answer("🔧 Обработчик alert_avail_ сработал")
     station_id = int(callback.data.split("_")[2])
-    # if not await check_pro(callback.from_user.id):
-    #     await callback.answer("Доступно только в PRO", show_alert=True)
-    #     return
+    if not await check_pro(callback.from_user.id):
+        await callback.answer("Доступно только в PRO", show_alert=True)
+        return
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
@@ -260,12 +262,11 @@ async def subscribe_availability(callback: types.CallbackQuery):
     await callback.answer("Вы подписаны на уведомления о появлении топлива на этой АЗС")
     await callback.message.answer(f"🔔 Вы будете получать уведомления, когда на {station.name} появится АИ-95.")
 
-# ---------- Сообщить цену ----------
+# ---------- Сообщить цену (краудсорсинг) ----------
 @router.callback_query(lambda c: c.data.startswith("report_price_"))
 async def start_report_price(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] report_price_ вызван: {callback.data}")
     await callback.answer()
-    await callback.message.answer("🔧 Обработчик report_price_ сработал")
     station_id = int(callback.data.split("_")[2])
     await state.update_data(station_id=station_id)
     await state.set_state(ReportPriceStates.waiting_price)
@@ -326,12 +327,14 @@ async def cancel_report(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.delete()
     await callback.message.answer("Отмена. Главное меню:", reply_markup=main_menu_keyboard())
 
-# ---------- График цен ----------
+# ---------- График цен (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("graph_"))
 async def show_graph(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] graph_ вызван: {callback.data}")
     await callback.answer()
-    await callback.message.answer("🔧 Обработчик graph_ сработал")
+    if not await check_pro(callback.from_user.id):
+        await callback.answer("Доступно только в PRO", show_alert=True)
+        return
     station_id = int(callback.data.split("_")[1])
     logger.info(f"Генерируем график для station_id={station_id}")
     try:
@@ -341,8 +344,14 @@ async def show_graph(callback: types.CallbackQuery):
                 photo=BufferedInputFile(graph_bytes, filename="price.png"),
                 caption="📊 Динамика цены за 30 дней"
             )
+            logger.info("График отправлен")
         else:
-            await callback.message.answer("Недостаточно данных для графика.")
+            await callback.message.answer(
+                "📊 Недостаточно данных для построения графика.\n"
+                "Для этой АЗС пока нет истории цен за 30 дней.\n"
+                "Попробуйте позже, когда накопится больше данных."
+            )
+            logger.info("Нет данных для графика")
     except Exception as e:
         logger.error(f"Ошибка при генерации графика: {e}", exc_info=True)
         await callback.message.answer(f"❌ Ошибка при генерации графика: {e}")
