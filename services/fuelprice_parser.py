@@ -55,15 +55,25 @@ def get_brand_from_name(name: str) -> str:
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
     async with AsyncSessionLocal() as db:
+        # Получаем город
+        city = await get_city_by_name(db, city_name)
+        if not city:
+            logger.warning(f"Город {city_name} не найден в БД")
+            return
+        # Проверяем наличие станций
+        stations = await get_all_active_stations_by_city(db, city.id)
+        if not stations:
+            logger.info(f"В городе {city_name} нет АЗС, парсинг не требуется")
+            return
+
         slug = await get_city_slug(db, city_name)
         if not slug:
             slug = FALLBACK_SLUGS.get(city_name)
             if not slug:
                 logger.error(f"Нет слага для города {city_name}")
                 return
-            city = await get_city_by_name(db, city_name)
-            if city:
-                await set_city_slug(db, city.id, slug)
+            await set_city_slug(db, city.id, slug)
+
         url = f"https://fuelprice.ru/{slug}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -83,22 +93,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
                 # Ищем блоки с ценами в JSON-подобной структуре
-                # Пример: [56.0109, 92.8525, 'Название', 'Адрес', 'Данные', 'Цена', ...]
                 pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
                 matches = pattern.findall(html)
                 if not matches:
                     logger.error(f"Не найдены данные станций для {city_name}")
                     continue
-
-                # Получаем все станции из БД для этого города
-                city = await get_city_by_name(db, city_name)
-                if not city:
-                    logger.warning(f"Город {city_name} не найден в БД")
-                    return
-                stations = await get_all_active_stations_by_city(db, city.id)
-                if not stations:
-                    logger.warning(f"В городе {city_name} нет АЗС в БД, обновление невозможно")
-                    return
 
                 updated_count = 0
                 for match in matches:
@@ -106,12 +105,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         lat = float(match[0])
                         lon = float(match[1])
                         raw_name = match[2].strip()
-                        # match[3] может быть адресом, но часто содержит HTML-код и цены — проверим
                         raw_address = match[3].strip()
-                        # Проверяем, что адрес не содержит HTML-тегов и не слишком длинный
+                        # Проверяем адрес на валидность
                         if '<' in raw_address or '>' in raw_address or len(raw_address) > 200:
-                            raw_address = None  # невалидный адрес
-                        # Данные о ценах в match[4] или match[5]
+                            raw_address = None
                         fuel_data = match[4] if len(match) > 4 else ''
                         price_str = match[5] if len(match) > 5 else ''
 
@@ -135,7 +132,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         # 1. По координатам (радиус 2 км)
                         for s in stations:
                             dist = haversine_distance(lat, lon, s.latitude, s.longitude)
-                            if dist < 2.0:  # 2 км
+                            if dist < 2.0:
                                 station = s
                                 break
 
@@ -158,8 +155,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                         break
 
                         if not station:
-                            # Если не найдена, пропускаем (не создаём новую)
-                            logger.warning(f"Не найдена станция для '{raw_name}' (коорд. {lat},{lon}) — пропускаем")
+                            logger.debug(f"Не найдена станция для '{raw_name}' (коорд. {lat},{lon}) — пропускаем")
                             continue
 
                         # Обновляем цену
@@ -177,7 +173,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     except Exception as e:
                         logger.error(f"Ошибка обработки блока: {e}")
-                        await db.rollback()  # откат для этой итерации
+                        await db.rollback()
                         continue
 
                 logger.info(f"Обновлено {updated_count} станций в {city_name}")
