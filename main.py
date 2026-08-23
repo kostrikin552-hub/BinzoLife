@@ -38,10 +38,10 @@ current_bot = None
 
 logger.info("Бот и диспетчер созданы")
 
-# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ (без глобального обработчика) ----
+# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ ----
 dp.include_router(start.router)
 dp.include_router(menu.router)
-dp.include_router(find.router)          # <--- Кнопки обрабатываются здесь
+dp.include_router(find.router)
 dp.include_router(profile.router)
 dp.include_router(admin.router)
 dp.include_router(notifications.router)
@@ -67,39 +67,20 @@ async def tasks_notifications_handler(request):
 
 async def tasks_prices_handler(request):
     token = request.headers.get("X-Internal-Token")
-    try:
-        await bot.send_message(settings.ADMIN_ID, f"🔔 Получен запрос на /internal/tasks/prices, токен: {token[:6] if token else 'None'}...")
-    except Exception as e:
-        logger.error(f"Не удалось отправить уведомление: {e}")
+    logger.info(f"Получен запрос на /internal/tasks/prices, токен: {token[:6] if token else 'None'}...")
     if token != settings.INTERNAL_TOKEN:
         logger.warning("Неверный токен для парсинга")
-        try:
-            await bot.send_message(settings.ADMIN_ID, "❌ Неверный токен для парсинга")
-        except:
-            pass
         return web.Response(status=403, text="Forbidden")
-    try:
-        await bot.send_message(settings.ADMIN_ID, "✅ Токен верный, запускаем парсинг")
-    except:
-        pass
     logger.info("Токен верный, запускаем refresh_prices")
     try:
         await refresh_prices()
         logger.info("refresh_prices завершена успешно")
-        try:
-            await bot.send_message(settings.ADMIN_ID, "✅ Парсинг завершён успешно")
-        except:
-            pass
         return web.Response(text='{"status":"done"}', content_type='application/json')
     except Exception as e:
         error_msg = f"❌ Ошибка парсинга: {e}"
         logger.error(error_msg)
         import traceback
         logger.error(traceback.format_exc())
-        try:
-            await bot.send_message(settings.ADMIN_ID, error_msg)
-        except:
-            pass
         return web.Response(text='{"status":"error"}', content_type='application/json')
 
 def setup_http_server():
