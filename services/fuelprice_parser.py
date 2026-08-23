@@ -55,24 +55,25 @@ def get_brand_from_name(name: str) -> str:
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
     async with AsyncSessionLocal() as db:
-        # Получаем город
+        # 1. Получаем город и проверяем наличие станций ДО получения слага
         city = await get_city_by_name(db, city_name)
         if not city:
             logger.warning(f"Город {city_name} не найден в БД")
             return
-        # Проверяем наличие станций
         stations = await get_all_active_stations_by_city(db, city.id)
         if not stations:
             logger.info(f"В городе {city_name} нет АЗС, парсинг не требуется")
             return
 
+        # 2. Теперь получаем слаг
         slug = await get_city_slug(db, city_name)
         if not slug:
             slug = FALLBACK_SLUGS.get(city_name)
             if not slug:
-                logger.error(f"Нет слага для города {city_name}")
+                logger.warning(f"Нет слага для города {city_name}, но есть АЗС — используем fallback? Создайте слаг через /set_slug")
                 return
             await set_city_slug(db, city.id, slug)
+            logger.info(f"Установлен слаг {slug} для города {city_name}")
 
         url = f"https://fuelprice.ru/{slug}"
         headers = {
@@ -106,13 +107,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         lon = float(match[1])
                         raw_name = match[2].strip()
                         raw_address = match[3].strip()
-                        # Проверяем адрес на валидность
                         if '<' in raw_address or '>' in raw_address or len(raw_address) > 200:
                             raw_address = None
                         fuel_data = match[4] if len(match) > 4 else ''
                         price_str = match[5] if len(match) > 5 else ''
 
-                        # Извлекаем цену АИ-95
                         price = None
                         if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
                             p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
@@ -128,14 +127,12 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                         # Сопоставляем с существующей станцией
                         station = None
-
                         # 1. По координатам (радиус 2 км)
                         for s in stations:
                             dist = haversine_distance(lat, lon, s.latitude, s.longitude)
                             if dist < 2.0:
                                 station = s
                                 break
-
                         # 2. По названию (нормализованному)
                         if not station:
                             norm_name = normalize_name(raw_name)
@@ -144,7 +141,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 if norm_name and s_name and (norm_name in s_name or s_name in norm_name):
                                     station = s
                                     break
-
                         # 3. По бренду
                         if not station:
                             brand = get_brand_from_name(raw_name)
@@ -155,10 +151,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                         break
 
                         if not station:
+                            # Уровень debug, чтобы не засорять логи
                             logger.debug(f"Не найдена станция для '{raw_name}' (коорд. {lat},{lon}) — пропускаем")
                             continue
 
-                        # Обновляем цену
                         await save_price(
                             db,
                             station.id,
