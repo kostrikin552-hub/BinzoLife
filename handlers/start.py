@@ -3,15 +3,12 @@ from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 from database.session import AsyncSessionLocal
 from database.crud import get_user, create_user, get_city_by_name, update_user
-from utils.geo import get_city_by_ip, get_cached_city, set_cached_city
-from keyboards.inline import (
-    city_choice_keyboard, main_menu_keyboard, 
-    welcome_keyboard, welcome_back_keyboard
-)
+from utils.geo import get_city_by_ip
+from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -54,17 +51,18 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
-# ---------- Обработчик выбора города ----------
+# ---------- Обработчик "Определить по IP" ----------
 @router.callback_query(F.data == "city_by_ip")
 async def city_by_ip(callback: types.CallbackQuery):
     await callback.answer("Определяем город...")
     user_id = callback.from_user.id
-    ip = callback.from_user.id  # Telegram не даёт IP, используем fallback
-    # В реальном бою IP можно получить из request, но в aiogram это сложно.
-    # Используем захардкоженный fallback или определяем по времени.
-    # Для демонстрации используем заглушку — на проде нужно получать IP из контекста.
-    # Пока используем тестовый город.
-    city_name = get_city_by_ip("8.8.8.8")  # заглушка
+
+    # В реальном бою IP нужно получать из запроса. Для демо используем заглушку.
+    # На проде нужно будет передавать IP через middleware или получать из request.
+    # Пока используем тестовый IP для демонстрации.
+    ip = "8.8.8.8"  # заглушка — заменить на реальный IP
+    city_name = await get_city_by_ip(ip)
+    
     if not city_name:
         await callback.message.edit_text(
             "❌ Не удалось определить город по IP. Пожалуйста, введите название вручную.",
@@ -97,6 +95,7 @@ async def city_by_ip(callback: types.CallbackQuery):
         reply_markup=welcome_back_keyboard()
     )
 
+# ---------- Обработчик "Ввести вручную" ----------
 @router.callback_query(F.data == "city_manual")
 async def city_manual(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -108,6 +107,17 @@ async def city_manual(callback: types.CallbackQuery, state: FSMContext):
         ])
     )
 
+# ---------- Обработчик "Сразу искать" ----------
+@router.callback_query(F.data == "search_now")
+async def search_now(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "🚀 Для поиска заправки нажми «Найти заправку» в главном меню.\n\n"
+        "Если город ещё не выбран — сначала выбери его через профиль или команду /start.",
+        reply_markup=main_menu_keyboard()
+    )
+
+# ---------- Ручной ввод города ----------
 @router.message(CityStates.waiting_city, F.text)
 async def city_manual_input(message: types.Message, state: FSMContext):
     city_name = message.text.strip()
@@ -140,6 +150,7 @@ async def city_manual_input(message: types.Message, state: FSMContext):
         reply_markup=welcome_back_keyboard()
     )
 
+# ---------- Отмена выбора города ----------
 @router.callback_query(F.data == "cancel_city")
 async def cancel_city(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
@@ -148,15 +159,4 @@ async def cancel_city(callback: types.CallbackQuery, state: FSMContext):
         "❌ Выбор города отменён.\n\n"
         "Ты можешь выбрать город позже через профиль или при первом поиске.",
         reply_markup=welcome_back_keyboard()
-    )
-
-# ---------- Команда для смены города (из профиля) ----------
-@router.message(F.text == "🏙 Изменить город")
-async def change_city(message: types.Message, state: FSMContext):
-    await state.set_state(CityStates.waiting_city)
-    await message.answer(
-        "📍 Введи название нового города:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_city")]
-        ])
     )
