@@ -201,8 +201,12 @@ async def follow_price(callback: types.CallbackQuery):
     station_id = int(callback.data.split("_")[1])
     if not await check_pro(callback.from_user.id):
         await callback.message.answer(
-            "🔔 Уведомления доступны только в PRO.\n"
-            "Купите PRO за 99 ₽/месяц, чтобы получать оповещения о ценах.",
+            "⛔ <b>Уведомления о снижении цены доступны только для PRO-подписчиков</b>\n\n"
+            "💎 Оформите PRO за 99 ₽/месяц и получайте оповещения:\n"
+            "• Когда цена упадёт ниже заданного уровня\n"
+            "• Когда на вашей АЗС появится бензин\n"
+            "• Графики цен и аналитику\n\n"
+            "Нажмите на кнопку «💎 PRO» в главном меню, чтобы оплатить.",
             reply_markup=pro_purchase_keyboard()
         )
         return
@@ -239,10 +243,17 @@ async def follow_price(callback: types.CallbackQuery):
 async def subscribe_availability(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
-    station_id = int(callback.data.split("_")[2])
     if not await check_pro(callback.from_user.id):
-        await callback.answer("Доступно только в PRO", show_alert=True)
+        await callback.message.answer(
+            "⛔ <b>Уведомления о появлении топлива доступны только для PRO-подписчиков</b>\n\n"
+            "💎 Оформите PRO за 99 ₽/месяц и получайте оповещения:\n"
+            "• Когда на вашей АЗС появится бензин\n"
+            "• Когда цена упадёт ниже целевого уровня\n\n"
+            "Нажмите на кнопку «💎 PRO» в главном меню, чтобы оплатить.",
+            reply_markup=pro_purchase_keyboard()
+        )
         return
+    station_id = int(callback.data.split("_")[2])
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
@@ -333,7 +344,15 @@ async def show_graph(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] graph_ вызван: {callback.data}")
     await callback.answer()
     if not await check_pro(callback.from_user.id):
-        await callback.answer("Доступно только в PRO", show_alert=True)
+        await callback.message.answer(
+            "⛔ <b>График цен доступен только для PRO-подписчиков</b>\n\n"
+            "💎 Оформите PRO за 99 ₽/месяц и получите:\n"
+            "• Уведомления о снижении цены\n"
+            "• Оповещения о появлении топлива\n"
+            "• Графики цен на АЗС\n\n"
+            "Нажмите на кнопку «💎 PRO» в главном меню, чтобы оплатить.",
+            reply_markup=pro_purchase_keyboard()
+        )
         return
     station_id = int(callback.data.split("_")[1])
     logger.info(f"Генерируем график для station_id={station_id}")
