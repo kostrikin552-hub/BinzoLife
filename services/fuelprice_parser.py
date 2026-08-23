@@ -10,6 +10,7 @@ from database.crud import (
     get_city_slug, set_city_slug, get_station_by_name_address
 )
 from database.models import FuelType, SourceType
+from utils.helpers import haversine_distance
 
 logger = logging.getLogger(__name__)
 
@@ -56,37 +57,32 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
-                # ---- Парсинг через регулярные выражения ----
-                # Ищем все блоки АЗС: они начинаются с заголовка (название) и содержат адрес и цены
-                # Паттерн: ищем строки с "Аи-95" или "АИ-95", затем извлекаем цену, а выше ищем название и адрес
-
-                # Разбиваем HTML на строки
-                lines = html.split('\n')
-                station_blocks = []
-                current_block = []
-                in_block = False
-
-                # Проходим по строкам, собирая блоки между заголовками (крупный текст)
-                for line in lines:
-                    line = line.strip()
-                    if not line:
+                # ---- Ищем все блоки с ценами, используя JSON-подобную структуру ----
+                # На странице fuelprice.ru данные часто встроены в JavaScript объекты
+                # Попробуем найти все блоки, содержащие координаты и цены
+                # Паттерн: координаты в формате [lat, lon, ...]
+                pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
+                matches = pattern.findall(html)
+                if not matches:
+                    # Альтернативный поиск через обычный HTML
+                    station_blocks = []
+                    lines = html.split('\n')
+                    for line in lines:
+                        if 'Аи-95' in line or 'АИ-95' in line:
+                            # Извлекаем цену
+                            match_price = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', line)
+                            if not match_price:
+                                match_price = re.search(r'А[иИ]-95\s+([\d.,]+)', line)
+                            if match_price:
+                                price = float(match_price.group(1).replace(',', '.'))
+                                # Ищем название станции выше
+                                # Это сложно, поэтому пропускаем, если не нашли в JSON
+                                continue
+                    if not matches:
+                        logger.error(f"Не найдены данные станций для {city_name}")
                         continue
-                    # Признак начала нового блока: строка содержит название сети (например, "ЛУКОЙЛ", "Газпромнефть", "КрасноярскНП") 
-                    # и не содержит "Аи-95" (это внутри блока)
-                    if re.search(r'(ЛУКОЙЛ|Газпромнефть|КрасноярскНП|Красноярскнефтепродукт|Кит|ОПТИ|ТНК|Роснефть|Shell|BP|Tatneft|Башнефть|Сургутнефтегаз)', line, re.I):
-                        if current_block:
-                            station_blocks.append('\n'.join(current_block))
-                        current_block = [line]
-                        in_block = True
-                    elif in_block:
-                        current_block.append(line)
-                        # Если строка содержит цену АИ-95, это конец блока? нет, продолжаем до следующего заголовка
-                if current_block:
-                    station_blocks.append('\n'.join(current_block))
 
-                logger.info(f"Найдено {len(station_blocks)} блоков АЗС")
-
-                # Получаем список станций в БД
+                # Получаем все станции из БД
                 city = await get_city_by_name(db, city_name)
                 if not city:
                     logger.warning(f"Город {city_name} не найден в БД")
@@ -97,72 +93,57 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     return
 
                 updated_count = 0
-                for block in station_blocks:
-                    # Извлекаем название (первая строка)
-                    block_lines = block.split('\n')
-                    name = block_lines[0].strip() if block_lines else None
-                    if not name:
-                        continue
-
-                    # Извлекаем адрес (строка, содержащая "ул", "пер", "шоссе" и т.д.)
-                    address = None
-                    for line in block_lines:
-                        if re.search(r'(ул|пер|шоссе|бульвар|пл|просп|пр-кт|пр-т|пр.)', line, re.I):
-                            address = line.strip()
-                            break
-                    if not address:
-                        # попробуем взять вторую строку, если она не содержит цен
-                        if len(block_lines) > 1 and not re.search(r'А[иИ]-95', block_lines[1]):
-                            address = block_lines[1].strip()
-
-                    # Извлекаем цену АИ-95
+                for match in matches:
+                    # match: [lat, lon, name, address, fuel_data, price_str, some_flag, ...]
+                    lat = float(match[0])
+                    lon = float(match[1])
+                    name = match[2].strip()
+                    address = match[3].strip()
+                    # Цена может быть в match[5] или извлечена отдельно
                     price = None
-                    for line in block_lines:
-                        # Ищем паттерн "Аи-95 : 84.9" или "АИ-95 : 84.9"
-                        match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', line)
-                        if match:
-                            price_text = match.group(1).replace(',', '.').replace(' ', '')
-                            try:
-                                price = float(price_text)
-                            except ValueError:
-                                pass
-                            break
+                    # Ищем в match[4] (fuel_data) или match[5] (price_str)
+                    fuel_data = match[4] if len(match) > 4 else ''
+                    price_str = match[5] if len(match) > 5 else ''
+                    # Пытаемся найти цену в fuel_data
+                    if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
+                        p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
+                        if p_match:
+                            price = float(p_match.group(1).replace(',', '.'))
+                    if not price and price_str:
+                        try:
+                            price = float(price_str.replace(',', '.'))
+                        except:
+                            pass
                     if not price:
-                        # дополнительный поиск: может быть написано "АИ-95 84.9"
-                        for line in block_lines:
-                            match = re.search(r'А[иИ]-95\s+([\d.,]+)', line)
-                            if match:
-                                price_text = match.group(1).replace(',', '.').replace(' ', '')
-                                try:
-                                    price = float(price_text)
-                                except ValueError:
-                                    pass
-                                break
-
-                    if not price:
-                        logger.warning(f"Не найдена цена для блока: {name[:30]}")
+                        # Пытаемся найти цену в полном тексте блока (всё, что после match)
+                        # Но это сложно, пропускаем
                         continue
 
-                    # Сопоставляем с БД
+                    # Сопоставление с БД по координатам (если расстояние < 0.5 км)
                     station = None
-                    # 1. по имени + адресу
-                    if name and address:
-                        station = await get_station_by_name_address(db, city.id, name, address)
-                    # 2. по частичному совпадению имени
+                    for s in stations:
+                        dist = haversine_distance(lat, lon, s.latitude, s.longitude)
+                        if dist < 0.5:  # 500 метров
+                            station = s
+                            break
+                    # Если не нашли по координатам, пробуем по названию
                     if not station:
                         for s in stations:
-                            if name.lower() in s.name.lower() or s.name.lower() in name.lower():
+                            # Убираем номера, скобки, приводим к нижнему регистру
+                            clean_name = re.sub(r'[^\w\s]', '', name.lower())
+                            clean_s_name = re.sub(r'[^\w\s]', '', s.name.lower())
+                            if clean_name in clean_s_name or clean_s_name in clean_name:
                                 station = s
                                 break
-                    # 3. по частичному совпадению адреса
-                    if not station and address:
-                        for s in stations:
-                            if address.lower() in s.address.lower() or s.address.lower() in address.lower():
-                                station = s
-                                break
+                    # Если не нашли по названию, пробуем по адресу
                     if not station:
-                        # Если станция не найдена, создаём новую? Лучше пропустить, чтобы не плодить дубли.
-                        logger.warning(f"Не найдена станция для '{name}' / '{address}', пропускаем")
+                        for s in stations:
+                            if address and s.address and (address.lower() in s.address.lower() or s.address.lower() in address.lower()):
+                                station = s
+                                break
+
+                    if not station:
+                        logger.warning(f"Не найдена станция для '{name}' / '{address}' (коорд. {lat},{lon})")
                         continue
 
                     # Обновляем цену
@@ -176,7 +157,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         recorded_at=datetime.now(timezone.utc)
                     )
                     updated_count += 1
-                    logger.info(f"Обновлена цена для {station.name}: {price} ₽")
+                    logger.info(f"Обновлена цена для {station.name}: {price} ₽ (по координатам)")
 
                 logger.info(f"Обновлено {updated_count} станций в {city_name}")
                 return
