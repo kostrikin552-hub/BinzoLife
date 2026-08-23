@@ -4,7 +4,6 @@ import logging
 import traceback
 import re
 from datetime import datetime, timezone
-from bs4 import BeautifulSoup
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, get_all_active_stations_by_city, save_price,
@@ -57,26 +56,37 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
-                soup = BeautifulSoup(html, 'lxml')
-                # Ищем все блоки АЗС – обычно это div с классом "station" или "item"
-                # На сайте fuelprice.ru структура: каждый блок АЗС содержит название, адрес, цены
-                # Используем поиск по тегам: ищем заголовки с названием, затем ищем цену АИ-95
-                
-                # Найдём все элементы, содержащие адрес и цены
-                # Альтернатива: найти все span с классом "price" и пройти по родительским блокам
-                station_blocks = soup.find_all('div', class_=re.compile(r'station|item|card'))
-                if not station_blocks:
-                    # попробуем другой подход: ищем все блоки, содержащие "Аи-95" или "АИ-95"
-                    blocks = soup.find_all(['div', 'section'], recursive=True)
-                    station_blocks = []
-                    for block in blocks:
-                        if block.find(string=re.compile(r'А[иИ]-95')):
-                            station_blocks.append(block)
-                if not station_blocks:
-                    logger.error(f"Не найдены блоки АЗС на странице для {city_name}")
-                    continue
+                # ---- Парсинг через регулярные выражения ----
+                # Ищем все блоки АЗС: они начинаются с заголовка (название) и содержат адрес и цены
+                # Паттерн: ищем строки с "Аи-95" или "АИ-95", затем извлекаем цену, а выше ищем название и адрес
 
-                # Получаем список всех станций в БД для сопоставления
+                # Разбиваем HTML на строки
+                lines = html.split('\n')
+                station_blocks = []
+                current_block = []
+                in_block = False
+
+                # Проходим по строкам, собирая блоки между заголовками (крупный текст)
+                for line in lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    # Признак начала нового блока: строка содержит название сети (например, "ЛУКОЙЛ", "Газпромнефть", "КрасноярскНП") 
+                    # и не содержит "Аи-95" (это внутри блока)
+                    if re.search(r'(ЛУКОЙЛ|Газпромнефть|КрасноярскНП|Красноярскнефтепродукт|Кит|ОПТИ|ТНК|Роснефть|Shell|BP|Tatneft|Башнефть|Сургутнефтегаз)', line, re.I):
+                        if current_block:
+                            station_blocks.append('\n'.join(current_block))
+                        current_block = [line]
+                        in_block = True
+                    elif in_block:
+                        current_block.append(line)
+                        # Если строка содержит цену АИ-95, это конец блока? нет, продолжаем до следующего заголовка
+                if current_block:
+                    station_blocks.append('\n'.join(current_block))
+
+                logger.info(f"Найдено {len(station_blocks)} блоков АЗС")
+
+                # Получаем список станций в БД
                 city = await get_city_by_name(db, city_name)
                 if not city:
                     logger.warning(f"Город {city_name} не найден в БД")
@@ -86,65 +96,73 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     logger.warning(f"В городе {city_name} нет АЗС в БД")
                     return
 
-                # Сопоставляем каждую станцию с ценой
                 updated_count = 0
                 for block in station_blocks:
-                    # Извлекаем название и адрес из блока
-                    # Название обычно в теге <h3> или <strong>
-                    name_tag = block.find(['h3', 'strong', 'span'], class_=re.compile(r'name|title'))
-                    if not name_tag:
-                        name_tag = block.find(['h3', 'strong'])
-                    name = name_tag.get_text(strip=True) if name_tag else None
-                    
-                    # Адрес – часто в теге с классом address
-                    addr_tag = block.find(['span', 'div'], class_=re.compile(r'address|addr'))
-                    if not addr_tag:
-                        addr_tag = block.find('span', string=re.compile(r'ул|просп|пер|шоссе|бульвар|пл'))
-                    address = addr_tag.get_text(strip=True) if addr_tag else None
-
-                    # Ищем цену АИ-95
-                    price = None
-                    # Ищем текст "Аи-95" или "АИ-95" и рядом цену
-                    price_pattern = re.compile(r'А[иИ]-95\s*[:：]\s*([\d.,]+)')
-                    block_text = block.get_text()
-                    match = price_pattern.search(block_text)
-                    if match:
-                        price_text = match.group(1).replace(',', '.').replace(' ', '')
-                        try:
-                            price = float(price_text)
-                        except ValueError:
-                            pass
-                    else:
-                        # Ищем span с классом price после упоминания АИ-95
-                        # Попробуем найти все элементы с ценой и выбрать тот, который рядом с АИ-95
-                        price_spans = block.find_all('span', class_=re.compile(r'price|cost'))
-                        for span in price_spans:
-                            if 'АИ-95' in span.previous_sibling or 'Аи-95' in span.previous_sibling:
-                                try:
-                                    price = float(span.get_text(strip=True).replace(',', '.'))
-                                    break
-                                except:
-                                    pass
-                    if not price:
+                    # Извлекаем название (первая строка)
+                    block_lines = block.split('\n')
+                    name = block_lines[0].strip() if block_lines else None
+                    if not name:
                         continue
 
-                    # Ищем станцию в БД по названию и адресу
+                    # Извлекаем адрес (строка, содержащая "ул", "пер", "шоссе" и т.д.)
+                    address = None
+                    for line in block_lines:
+                        if re.search(r'(ул|пер|шоссе|бульвар|пл|просп|пр-кт|пр-т|пр.)', line, re.I):
+                            address = line.strip()
+                            break
+                    if not address:
+                        # попробуем взять вторую строку, если она не содержит цен
+                        if len(block_lines) > 1 and not re.search(r'А[иИ]-95', block_lines[1]):
+                            address = block_lines[1].strip()
+
+                    # Извлекаем цену АИ-95
+                    price = None
+                    for line in block_lines:
+                        # Ищем паттерн "Аи-95 : 84.9" или "АИ-95 : 84.9"
+                        match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', line)
+                        if match:
+                            price_text = match.group(1).replace(',', '.').replace(' ', '')
+                            try:
+                                price = float(price_text)
+                            except ValueError:
+                                pass
+                            break
+                    if not price:
+                        # дополнительный поиск: может быть написано "АИ-95 84.9"
+                        for line in block_lines:
+                            match = re.search(r'А[иИ]-95\s+([\d.,]+)', line)
+                            if match:
+                                price_text = match.group(1).replace(',', '.').replace(' ', '')
+                                try:
+                                    price = float(price_text)
+                                except ValueError:
+                                    pass
+                                break
+
+                    if not price:
+                        logger.warning(f"Не найдена цена для блока: {name[:30]}")
+                        continue
+
+                    # Сопоставляем с БД
                     station = None
+                    # 1. по имени + адресу
                     if name and address:
                         station = await get_station_by_name_address(db, city.id, name, address)
-                    if not station and name:
-                        # попробуем по названию (частичному совпадению)
+                    # 2. по частичному совпадению имени
+                    if not station:
                         for s in stations:
                             if name.lower() in s.name.lower() or s.name.lower() in name.lower():
                                 station = s
                                 break
+                    # 3. по частичному совпадению адреса
                     if not station and address:
                         for s in stations:
                             if address.lower() in s.address.lower() or s.address.lower() in address.lower():
                                 station = s
                                 break
                     if not station:
-                        logger.warning(f"Не найдена станция для {name} / {address}, пропускаем")
+                        # Если станция не найдена, создаём новую? Лучше пропустить, чтобы не плодить дубли.
+                        logger.warning(f"Не найдена станция для '{name}' / '{address}', пропускаем")
                         continue
 
                     # Обновляем цену
