@@ -21,20 +21,23 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-current_bot = None  # <-- добавлено
+current_bot = None
 
+# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ ----
 dp.include_router(start.router)
 dp.include_router(menu.router)
-dp.include_router(find.router)
+dp.include_router(find.router)          # <--- ОБЯЗАТЕЛЬНО для кнопок
 dp.include_router(profile.router)
-dp.include_router(notifications.router)
 dp.include_router(admin.router)
+dp.include_router(notifications.router)
+dp.include_router(common.router)
 dp.include_router(payments.router)
 dp.include_router(review.router)
 dp.include_router(emergency.router)
-dp.include_router(common.router)
 
-# ---------- HTTP ----------
+logger.info("Все роутеры зарегистрированы")
+
+# ---------- HTTP обработчики ----------
 async def health_handler(request):
     return web.Response(text='{"status":"ok"}', content_type='application/json')
 
@@ -91,28 +94,17 @@ def setup_http_server():
     app.router.add_post("/internal/tasks/prices", tasks_prices_handler)
     return app
 
-# ---------- Функция обновления схемы БД (исправленная) ----------
+# ---------- Функция обновления схемы БД ----------
 async def ensure_schema_updates():
-    """
-    Добавляет недостающие колонки и таблицы, используя отдельные сессии для каждой операции,
-    чтобы избежать ошибок aborted transaction.
-    """
     logger.info("Проверка и обновление схемы БД...")
-
-    # Вспомогательная функция для выполнения ALTER в отдельной сессии
     async def add_column_if_not_exists(table: str, column: str, col_type: str, default: str = ""):
         async with AsyncSessionLocal() as db:
-            # Проверяем существование колонки через выборку
             try:
                 await db.execute(text(f"SELECT {column} FROM {table} LIMIT 0"))
-                # Колонка существует
                 return
             except Exception as e:
-                # Если ошибка говорит о том, что колонки нет, добавляем
                 if "does not exist" in str(e) or "UndefinedColumnError" in str(e):
-                    # Откатываем транзакцию (она в состоянии ошибки)
                     await db.rollback()
-                    # Теперь в новой транзакции выполняем ALTER
                     async with AsyncSessionLocal() as db2:
                         try:
                             if default:
@@ -131,7 +123,6 @@ async def ensure_schema_updates():
         async with AsyncSessionLocal() as db:
             try:
                 await db.execute(text(f"SELECT 1 FROM {table_name} LIMIT 0"))
-                # таблица существует
                 return
             except Exception:
                 await db.rollback()
@@ -144,15 +135,10 @@ async def ensure_schema_updates():
                         logger.error(f"Не удалось создать таблицу {table_name}: {e}")
                         await db2.rollback()
 
-    # 1. Колонки в notifications
     await add_column_if_not_exists("notifications", "radius_km", "FLOAT")
-
-    # 2. Колонки в users
     await add_column_if_not_exists("users", "total_saved", "FLOAT", "0")
     await add_column_if_not_exists("users", "referral_code", "VARCHAR(20)")
     await add_column_if_not_exists("users", "referred_by", "BIGINT")
-
-    # 3. Таблицы
     await create_table_if_not_exists("city_slugs", """
         CREATE TABLE city_slugs (
             city_id INTEGER PRIMARY KEY REFERENCES cities(id),
@@ -190,17 +176,14 @@ async def ensure_schema_updates():
             recorded_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
         )
     """)
-
-    # 4. Колонка is_fresh в fuel_prices и availability_reports
     await add_column_if_not_exists("fuel_prices", "is_fresh", "BOOLEAN", "TRUE")
     await add_column_if_not_exists("availability_reports", "is_fresh", "BOOLEAN", "TRUE")
-
     logger.info("Обновление схемы БД завершено")
 
 # ---------- Фоновые задачи ----------
 async def expire_old_data_periodically():
     while True:
-        await asyncio.sleep(1800)  # 30 минут
+        await asyncio.sleep(1800)
         try:
             async with AsyncSessionLocal() as db:
                 await expire_old_prices(db, hours=12)
@@ -211,7 +194,7 @@ async def expire_old_data_periodically():
 
 async def check_achievements_periodically():
     while True:
-        await asyncio.sleep(3600)  # час
+        await asyncio.sleep(3600)
         try:
             async with AsyncSessionLocal() as db:
                 users_with_reports = await db.execute(
@@ -315,12 +298,11 @@ async def seed_initial_data():
         else:
             logger.info(f"В городе уже есть {count} станций, пропускаем загрузку.")
 
-# ---------- Startup ----------
+# ---------- Startup / Shutdown ----------
 async def on_startup():
     global current_bot
     current_bot = bot
     async with engine.begin() as conn:
-        from database.models import Base
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
     await ensure_schema_updates()
