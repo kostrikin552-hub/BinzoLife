@@ -13,10 +13,15 @@ async def refresh_prices():
             logger.warning("Нет активных городов для парсинга")
             return
         for city in cities:
-            # Проверяем, есть ли в городе активные станции
+            # Проверяем, есть ли в городе активные станции с координатами
             stations = await get_stations_by_city(db, city.id)
             if not stations:
                 logger.info(f"В городе {city.name} нет АЗС, пропускаем парсинг")
+                continue
+            # Дополнительно проверяем, что у станций есть координаты (не None)
+            has_valid_coords = any(s.latitude is not None and s.longitude is not None for s in stations)
+            if not has_valid_coords:
+                logger.info(f"В городе {city.name} нет станций с координатами, пропускаем парсинг")
                 continue
             try:
                 await fetch_fuelprice_prices(city.name)
