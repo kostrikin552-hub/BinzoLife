@@ -1,7 +1,21 @@
-import asyncio
+import sys
 import logging
+import asyncio
 from datetime import datetime
-from aiogram import Bot, Dispatcher
+
+# ---- НАСТРОЙКА ЛОГИРОВАНИЯ (ДО ВСЕГО) ----
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
+
+# Диагностический вывод, чтобы убедиться, что код запускается
+print("=== STARTING BOT (main.py executed) ===", flush=True)
+logger.info("=== MAIN.PY STARTED ===")
+
+from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
@@ -17,16 +31,18 @@ from services.fuel import refresh_prices
 from database.crud import expire_old_prices, expire_old_availability, check_and_award_achievements
 from database.session import AsyncSessionLocal
 
-logger = logging.getLogger(__name__)
+logger.info("Импорты выполнены")
 
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 current_bot = None
 
-# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ ----
+logger.info("Бот и диспетчер созданы")
+
+# ---- РЕГИСТРАЦИЯ РОУТЕРОВ ----
 dp.include_router(start.router)
 dp.include_router(menu.router)
-dp.include_router(find.router)          # <--- ОБЯЗАТЕЛЬНО для кнопок
+dp.include_router(find.router)
 dp.include_router(profile.router)
 dp.include_router(admin.router)
 dp.include_router(notifications.router)
@@ -36,6 +52,12 @@ dp.include_router(review.router)
 dp.include_router(emergency.router)
 
 logger.info("Все роутеры зарегистрированы")
+
+# ---- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ДЛЯ ДИАГНОСТИКИ CALLBACK ----
+@dp.callback_query()
+async def catch_all_callbacks(callback: types.CallbackQuery):
+    logger.info(f"🔔 ГЛОБАЛЬНЫЙ CALLBACK: {callback.data} от {callback.from_user.id}")
+    await callback.answer("Диагностика: callback получен, но обработан глобально")
 
 # ---------- HTTP обработчики ----------
 async def health_handler(request):
@@ -302,6 +324,7 @@ async def seed_initial_data():
 async def on_startup():
     global current_bot
     current_bot = bot
+    logger.info("=== ON_STARTUP CALLED ===")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
@@ -310,6 +333,10 @@ async def on_startup():
     asyncio.create_task(expire_old_data_periodically())
     asyncio.create_task(check_achievements_periodically())
     logger.info("Бот запущен, фоновые задачи активны")
+    try:
+        await bot.send_message(settings.ADMIN_ID, "✅ Бот успешно запущен и готов к работе!")
+    except Exception as e:
+        logger.error(f"Не удалось отправить сообщение админу: {e}")
 
 async def on_shutdown():
     global current_bot
@@ -349,6 +376,7 @@ async def start_bot_with_retry():
                 raise
 
 async def main():
+    logger.info("=== MAIN() CALLED ===")
     app = setup_http_server()
     runner = web.AppRunner(app)
     await runner.setup()
@@ -364,7 +392,10 @@ async def main():
         await engine.dispose()
 
 if __name__ == "__main__":
+    logger.info("=== Блок __main__ выполняется ===")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Бот остановлен")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}", exc_info=True)
