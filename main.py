@@ -3,7 +3,7 @@ import logging
 import asyncio
 from datetime import datetime
 
-# ---- НАСТРОЙКА ЛОГИРОВАНИЯ (ДО ВСЕГО) ----
+# ---- НАСТРОЙКА ЛОГИРОВАНИЯ ----
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -11,7 +11,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Диагностический вывод, чтобы убедиться, что код запускается
 print("=== STARTING BOT (main.py executed) ===", flush=True)
 logger.info("=== MAIN.PY STARTED ===")
 
@@ -39,10 +38,10 @@ current_bot = None
 
 logger.info("Бот и диспетчер созданы")
 
-# ---- РЕГИСТРАЦИЯ РОУТЕРОВ ----
+# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ (без глобального обработчика) ----
 dp.include_router(start.router)
 dp.include_router(menu.router)
-dp.include_router(find.router)
+dp.include_router(find.router)          # <--- Кнопки обрабатываются здесь
 dp.include_router(profile.router)
 dp.include_router(admin.router)
 dp.include_router(notifications.router)
@@ -52,12 +51,6 @@ dp.include_router(review.router)
 dp.include_router(emergency.router)
 
 logger.info("Все роутеры зарегистрированы")
-
-# ---- ГЛОБАЛЬНЫЙ ОБРАБОТЧИК ДЛЯ ДИАГНОСТИКИ CALLBACK ----
-@dp.callback_query()
-async def catch_all_callbacks(callback: types.CallbackQuery):
-    logger.info(f"🔔 ГЛОБАЛЬНЫЙ CALLBACK: {callback.data} от {callback.from_user.id}")
-    await callback.answer("Диагностика: callback получен, но обработан глобально")
 
 # ---------- HTTP обработчики ----------
 async def health_handler(request):
@@ -205,7 +198,7 @@ async def ensure_schema_updates():
 # ---------- Фоновые задачи ----------
 async def expire_old_data_periodically():
     while True:
-        await asyncio.sleep(1800)
+        await asyncio.sleep(1800)  # 30 минут
         try:
             async with AsyncSessionLocal() as db:
                 await expire_old_prices(db, hours=12)
@@ -216,7 +209,7 @@ async def expire_old_data_periodically():
 
 async def check_achievements_periodically():
     while True:
-        await asyncio.sleep(3600)
+        await asyncio.sleep(3600)  # час
         try:
             async with AsyncSessionLocal() as db:
                 users_with_reports = await db.execute(
