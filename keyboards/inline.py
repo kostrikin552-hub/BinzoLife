@@ -1,6 +1,6 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-def station_action_keyboard(station_id: int, price: float, availability_status: str, lat: float, lon: float, city_id: int = None):
+def station_action_keyboard(station_id: int, price: float, availability_status, lat: float, lon: float, city_id: int = None):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
     buttons = [
         [
