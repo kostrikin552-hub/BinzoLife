@@ -1,3 +1,4 @@
+import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -8,8 +9,7 @@ from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, log_action, get_city_by_id, get_station_by_id,
     get_latest_price, create_notification, save_price,
-    get_latest_fresh_price, get_latest_fresh_availability,
-    save_availability_report_with_consensus
+    get_latest_fresh_price
 )
 from database.models import FuelType, AvailabilityStatus, SourceType, Station, FuelPrice, AvailabilityReport
 from services.rating import calculate_rating
@@ -19,6 +19,7 @@ from utils.helpers import status_emoji, format_time_ago
 from keyboards.reply import main_menu_keyboard, fuel_choice_keyboard
 from keyboards.inline import station_action_keyboard, pro_purchase_keyboard
 
+logger = logging.getLogger(__name__)
 router = Router()
 
 class FindStates(StatesGroup):
@@ -65,7 +66,6 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         lat, lon = city.latitude, city.longitude
         fuel_type = FuelType.AI_95
 
-        # ---- Оптимизированный запрос ----
         station_ids_query = select(Station.id).where(Station.city_id == city_id, Station.is_active == True)
         station_ids = (await db.execute(station_ids_query)).scalars().all()
         if not station_ids:
@@ -128,7 +128,6 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         min_price = (await db.execute(min_stmt)).scalar() or 0
         max_price = (await db.execute(max_stmt)).scalar() or 0
 
-        # Формируем результаты
         stations = (await db.execute(select(Station).where(Station.id.in_(station_ids)))).scalars().all()
         results = []
         for station in stations:
@@ -185,45 +184,39 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         await message.answer("Выберите заправку для деталей или вернитесь в меню.", reply_markup=main_menu_keyboard())
         await state.clear()
 
-# ---------- Переход в профиль ----------
+# ---------- Обработчики callback-кнопок ----------
+
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
     from handlers.profile import show_profile
     await show_profile(callback.message)
 
-# ---------- Следить за ценой (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("follow_"))
 async def follow_price(callback: types.CallbackQuery):
+    logger.info(f"[CALLBACK] follow_ вызван: {callback.data}")
     await callback.answer()
     station_id = int(callback.data.split("_")[1])
-    
     if not await check_pro(callback.from_user.id):
         await callback.message.answer(
-            "🔔 Уведомления доступны только в PRO.\n"
-            "Купите PRO за 99 ₽/месяц и получайте оповещения о снижении цен.",
+            "🔔 Уведомления доступны только в PRO.\nКупите PRO за 99 ₽/месяц.",
             reply_markup=pro_purchase_keyboard()
         )
         return
-    
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
             await callback.message.answer("Сначала выполните /start")
             return
-        
         station = await get_station_by_id(db, station_id)
         if not station:
             await callback.message.answer("АЗС не найдена.")
             return
-        
         latest_price = await get_latest_fresh_price(db, station_id, FuelType.AI_95)
         if not latest_price:
             await callback.message.answer("Не удалось получить текущую цену.")
             return
-        
         target_price = round(latest_price.price - 0.5, 2)
-        
         await create_notification(
             db,
             user_id=user.id,
@@ -234,13 +227,12 @@ async def follow_price(callback: types.CallbackQuery):
         )
         await callback.message.answer(
             f"✅ Подписка на цену на АЗС <b>{station.name}</b> активирована.\n"
-            f"Я сообщу, когда цена станет ≤ {target_price} ₽.\n"
-            f"(Вы можете отписаться в разделе «Мои уведомления».)"
+            f"Я сообщу, когда цена станет ≤ {target_price} ₽."
         )
 
-# ---------- Уведомления о появлении (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("alert_avail_"))
 async def subscribe_availability(callback: types.CallbackQuery):
+    logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
     station_id = int(callback.data.split("_")[2])
     if not await check_pro(callback.from_user.id):
@@ -265,16 +257,15 @@ async def subscribe_availability(callback: types.CallbackQuery):
     await callback.answer("Вы подписаны на уведомления о появлении топлива на этой АЗС")
     await callback.message.answer(f"🔔 Вы будете получать уведомления, когда на {station.name} появится АИ-95.")
 
-# ---------- Сообщить цену (краудсорсинг) ----------
 @router.callback_query(lambda c: c.data.startswith("report_price_"))
 async def start_report_price(callback: types.CallbackQuery, state: FSMContext):
+    logger.info(f"[CALLBACK] report_price_ вызван: {callback.data}")
     await callback.answer()
     station_id = int(callback.data.split("_")[2])
     await state.update_data(station_id=station_id)
     await state.set_state(ReportPriceStates.waiting_price)
     await callback.message.answer(
-        "Введите актуальную цену на АИ‑95 на этой АЗС (в рублях, например, 68.50):\n"
-        "Или нажмите «Отмена», чтобы не сообщать.",
+        "Введите актуальную цену на АИ‑95 на этой АЗС (в рублях, например, 68.50):",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_report")]
         ])
@@ -289,27 +280,23 @@ async def process_report_price(message: types.Message, state: FSMContext):
     except ValueError:
         await message.answer("❌ Пожалуйста, введите положительное число (например, 68.50).")
         return
-
     data = await state.get_data()
     station_id = data.get("station_id")
     if not station_id:
         await message.answer("Ошибка: АЗС не найдена. Попробуйте заново.")
         await state.clear()
         return
-
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
         if not user:
             await message.answer("Сначала /start")
             await state.clear()
             return
-
         station = await get_station_by_id(db, station_id)
         if not station:
             await message.answer("АЗС не найдена.")
             await state.clear()
             return
-
         await save_price(
             db,
             station_id=station_id,
@@ -320,7 +307,6 @@ async def process_report_price(message: types.Message, state: FSMContext):
         )
         user.reputation += 1
         await db.commit()
-
     await message.answer(
         f"✅ Спасибо! Цена для {station.name} обновлена до {price:.2f} ₽.\n"
         f"Ваша репутация +1 (всего {user.reputation}).",
@@ -335,9 +321,9 @@ async def cancel_report(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.delete()
     await callback.message.answer("Отмена. Главное меню:", reply_markup=main_menu_keyboard())
 
-# ---------- График цен (PRO) ----------
 @router.callback_query(lambda c: c.data.startswith("graph_"))
 async def show_graph(callback: types.CallbackQuery):
+    logger.info(f"[CALLBACK] graph_ вызван: {callback.data}")
     await callback.answer()
     if not await check_pro(callback.from_user.id):
         await callback.answer("Доступно только в PRO", show_alert=True)
@@ -347,7 +333,7 @@ async def show_graph(callback: types.CallbackQuery):
     if graph_bytes:
         await callback.message.answer_photo(
             photo=BufferedInputFile(graph_bytes, filename="price.png"),
-            caption=f"📊 Динамика цены за 30 дней"
+            caption="📊 Динамика цены за 30 дней"
         )
     else:
         await callback.message.answer("Недостаточно данных для графика.")
