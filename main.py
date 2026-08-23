@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+current_bot = None  # <-- добавлено
 
 dp.include_router(start.router)
 dp.include_router(menu.router)
@@ -316,14 +317,14 @@ async def seed_initial_data():
 
 # ---------- Startup ----------
 async def on_startup():
+    global current_bot
+    current_bot = bot
     async with engine.begin() as conn:
         from database.models import Base
         await conn.run_sync(Base.metadata.create_all)
         logger.info("Таблицы созданы (если не существовали)")
-    # Обновляем схему для новых колонок и таблиц
     await ensure_schema_updates()
     await seed_initial_data()
-    # Запускаем фоновые задачи
     asyncio.create_task(expire_old_data_periodically())
     asyncio.create_task(check_achievements_periodically())
     logger.info("Бот запущен, фоновые задачи активны")
