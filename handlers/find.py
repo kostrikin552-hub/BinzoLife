@@ -310,7 +310,6 @@ async def process_report_price(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # сохраняем цену
         await save_price(
             db,
             station_id=station_id,
@@ -319,7 +318,6 @@ async def process_report_price(message: types.Message, state: FSMContext):
             source=SourceType.USER,
             confidence=0.6
         )
-        # обновляем репутацию
         user.reputation += 1
         await db.commit()
 
@@ -334,9 +332,7 @@ async def process_report_price(message: types.Message, state: FSMContext):
 async def cancel_report(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     await state.clear()
-    # Удаляем сообщение с инлайн-клавиатурой
     await callback.message.delete()
-    # Отправляем новое сообщение с Reply-клавиатурой
     await callback.message.answer("Отмена. Главное меню:", reply_markup=main_menu_keyboard())
 
 # ---------- График цен (PRO) ----------
