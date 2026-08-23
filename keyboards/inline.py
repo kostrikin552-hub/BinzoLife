@@ -8,7 +8,11 @@ def city_choice_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="🚀 Сразу искать", callback_data="search_now")]
     ])
 
-# ---------- Клавиатура для повторного запуска ----------
+# ---------- Клавиатура для приветствия (первое сообщение) ----------
+def welcome_keyboard() -> InlineKeyboardMarkup:
+    return city_choice_keyboard()  # та же самая, для удобства
+
+# ---------- Клавиатура для повторного запуска (Reply) ----------
 def welcome_back_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
@@ -46,7 +50,6 @@ def station_action_keyboard(station_id: int, price: float, availability_status, 
             InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")
         ]
     ]
-    # PRO-кнопки только если пользователь PRO
     if is_pro:
         buttons.append([
             InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}"),
