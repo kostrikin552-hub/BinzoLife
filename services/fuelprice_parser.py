@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, get_all_active_stations_by_city, save_price,
-    get_city_slug, set_city_slug, get_station_by_name_address, create_station
+    get_city_slug, set_city_slug
 )
 from database.models import FuelType, SourceType
 from utils.helpers import haversine_distance
@@ -28,18 +28,13 @@ FALLBACK_SLUGS = {
 }
 
 def normalize_name(name: str) -> str:
-    """Очищает название АЗС от лишних слов, номеров, ИНН и т.д."""
     if not name:
         return ""
-    # Убираем ИНН, ОАО, АО, ЗАО, ООО, номера, скобки
     name = re.sub(r'\b(ИНН\s*\d+|ОАО|АО|ЗАО|ООО|ООО\s*"|"|\(|\)|№|\d+)\s*', '', name, flags=re.I)
-    # Убираем лишние пробелы
     name = re.sub(r'\s+', ' ', name).strip()
-    # Приводим к нижнему регистру
     return name.lower()
 
 def get_brand_from_name(name: str) -> str:
-    """Извлекает бренд из названия станции."""
     name_lower = name.lower()
     if 'лукойл' in name_lower:
         return 'Лукойл'
@@ -55,10 +50,6 @@ def get_brand_from_name(name: str) -> str:
         return 'Роснефть'
     elif 'тнк' in name_lower:
         return 'ТНК'
-    elif 'shell' in name_lower:
-        return 'Shell'
-    elif 'bp' in name_lower:
-        return 'BP'
     return None
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
@@ -91,32 +82,36 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
-                # Ищем все блоки с ценами, используя JSON-подобную структуру
-                # На странице fuelprice.ru данные часто встроены в JavaScript объекты
+                # Ищем блоки с ценами в JSON-подобной структуре
+                # Пример: [56.0109, 92.8525, 'Название', 'Адрес', 'Данные', 'Цена', ...]
                 pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
                 matches = pattern.findall(html)
                 if not matches:
                     logger.error(f"Не найдены данные станций для {city_name}")
                     continue
 
-                # Получаем все станции из БД
+                # Получаем все станции из БД для этого города
                 city = await get_city_by_name(db, city_name)
                 if not city:
                     logger.warning(f"Город {city_name} не найден в БД")
                     return
                 stations = await get_all_active_stations_by_city(db, city.id)
                 if not stations:
-                    logger.warning(f"В городе {city_name} нет АЗС в БД, но будем создавать новые")
-                    stations = []
+                    logger.warning(f"В городе {city_name} нет АЗС в БД, обновление невозможно")
+                    return
 
                 updated_count = 0
-                created_count = 0
                 for match in matches:
                     try:
                         lat = float(match[0])
                         lon = float(match[1])
                         raw_name = match[2].strip()
-                        address = match[3].strip()
+                        # match[3] может быть адресом, но часто содержит HTML-код и цены — проверим
+                        raw_address = match[3].strip()
+                        # Проверяем, что адрес не содержит HTML-тегов и не слишком длинный
+                        if '<' in raw_address or '>' in raw_address or len(raw_address) > 200:
+                            raw_address = None  # невалидный адрес
+                        # Данные о ценах в match[4] или match[5]
                         fuel_data = match[4] if len(match) > 4 else ''
                         price_str = match[5] if len(match) > 5 else ''
 
@@ -134,17 +129,17 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         if not price:
                             continue
 
-                        # Ищем станцию в БД
+                        # Сопоставляем с существующей станцией
                         station = None
 
-                        # 1. По координатам (радиус 1 км)
+                        # 1. По координатам (радиус 2 км)
                         for s in stations:
                             dist = haversine_distance(lat, lon, s.latitude, s.longitude)
-                            if dist < 1.0:  # 1 км
+                            if dist < 2.0:  # 2 км
                                 station = s
                                 break
 
-                        # 2. Если не нашли, по нормализованному названию
+                        # 2. По названию (нормализованному)
                         if not station:
                             norm_name = normalize_name(raw_name)
                             for s in stations:
@@ -153,7 +148,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station = s
                                     break
 
-                        # 3. Если не нашли, по бренду
+                        # 3. По бренду
                         if not station:
                             brand = get_brand_from_name(raw_name)
                             if brand:
@@ -162,42 +157,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                         station = s
                                         break
 
-                        # 4. Если не нашли, создаём новую станцию
                         if not station:
-                            # Извлекаем чистое название без лишних слов
-                            clean_name = raw_name
-                            # Если название содержит "Газпромнефть", оставляем только бренд и номер
-                            if 'Газпромнефть' in raw_name:
-                                clean_name = raw_name
-                            elif 'ЛУКОЙЛ' in raw_name or 'Лукойл' in raw_name:
-                                clean_name = raw_name
-                            elif 'КрасноярскНП' in raw_name or 'Красноярскнефтепродукт' in raw_name:
-                                clean_name = raw_name
-                            else:
-                                # Убираем ИНН, ОАО и т.д.
-                                clean_name = re.sub(r'\b(ИНН\s*\d+|ОАО|АО|ЗАО|ООО|ООО\s*"|"|\(|\))\s*', '', raw_name, flags=re.I).strip()
-
-                            # Если адрес пустой, попробуем извлечь из fuel_data или оставить как есть
-                            if not address and raw_name:
-                                address = raw_name  # временно
-
-                            brand = get_brand_from_name(raw_name)
-                            # Создаём станцию
-                            try:
-                                station = await create_station(
-                                    db,
-                                    city_id=city.id,
-                                    name=clean_name,
-                                    address=address,
-                                    lat=lat,
-                                    lon=lon,
-                                    brand=brand
-                                )
-                                created_count += 1
-                                logger.info(f"Создана новая станция: {clean_name} ({lat},{lon})")
-                            except Exception as e:
-                                logger.error(f"Не удалось создать станцию {clean_name}: {e}")
-                                continue
+                            # Если не найдена, пропускаем (не создаём новую)
+                            logger.warning(f"Не найдена станция для '{raw_name}' (коорд. {lat},{lon}) — пропускаем")
+                            continue
 
                         # Обновляем цену
                         await save_price(
@@ -214,9 +177,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     except Exception as e:
                         logger.error(f"Ошибка обработки блока: {e}")
+                        await db.rollback()  # откат для этой итерации
                         continue
 
-                logger.info(f"Обновлено {updated_count} станций, создано {created_count} новых в {city_name}")
+                logger.info(f"Обновлено {updated_count} станций в {city_name}")
                 return
 
             except asyncio.TimeoutError:
