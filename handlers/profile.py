@@ -1,20 +1,14 @@
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 from database.session import AsyncSessionLocal
-from database.crud import (
-    get_user, update_user, get_city_by_name, is_user_pro,
-    get_user_achievements, get_referral_link, get_user_economy_total
-)
-from database.models import FuelType
+from database.crud import get_user, get_city_by_name, is_user_pro, get_user_achievements, get_referral_link
 from keyboards.reply import main_menu_keyboard
+from keyboards.inline import popular_cities_keyboard
 from services.subscription import format_pro_until
 
 router = Router()
-
-class ProfileStates(StatesGroup):
-    waiting_city = State()
 
 @router.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
@@ -23,6 +17,7 @@ async def show_profile(message: types.Message):
         if not user:
             await message.answer("Сначала выполните /start")
             return
+
         city_name = user.city.name if user.city else "Не задан"
         pro_active = await is_user_pro(db, user)
         if pro_active and user.pro_until:
@@ -32,11 +27,9 @@ async def show_profile(message: types.Message):
 
         fuel_display = user.default_fuel.value if hasattr(user.default_fuel, 'value') else str(user.default_fuel)
 
-        # достижения
         achievements = await get_user_achievements(db, user.id)
         ach_text = "\n".join([f"🏅 {a.achievement_type} (бонус: +{a.bonus_days_granted} дн PRO)" for a in achievements]) if achievements else "Нет достижений"
 
-        # экономия
         total_saved = user.total_saved or 0.0
 
         text = (
@@ -60,52 +53,12 @@ async def show_profile(message: types.Message):
         await message.answer(text, reply_markup=kb)
 
 @router.callback_query(F.data == "change_city")
-async def change_city_start(callback: types.CallbackQuery, state: FSMContext):
+async def change_city(callback: types.CallbackQuery):
     await callback.answer()
-    await state.set_state(ProfileStates.waiting_city)
     await callback.message.edit_text(
-        "Введите название города (например, Красноярск):",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_city")]
-        ])
+        "📍 Выбери новый город из списка:",
+        reply_markup=popular_cities_keyboard(with_back=True)
     )
-
-@router.callback_query(F.data == "cancel_city")
-async def cancel_city(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer()
-    await state.clear()
-    await callback.message.edit_text("Изменение города отменено.")
-    await show_profile(callback.message)
-
-@router.message(ProfileStates.waiting_city, F.text)
-async def set_city(message: types.Message, state: FSMContext):
-    city_name = message.text.strip()
-    if not city_name:
-        await message.answer("Название города не может быть пустым. Попробуйте снова.")
-        return
-
-    async with AsyncSessionLocal() as db:
-        user = await get_user(db, message.from_user.id)
-        if not user:
-            await message.answer("Сначала выполните /start")
-            await state.clear()
-            return
-
-        city = await get_city_by_name(db, city_name)
-        if not city:
-            await message.answer(
-                f"❌ Город '{city_name}' не найден в базе.\n"
-                "Пожалуйста, введите существующий город или обратитесь к администратору."
-            )
-            return
-
-        user.city_id = city.id
-        await db.commit()
-        await db.refresh(user)
-
-        await message.answer(f"✅ Город изменён на {city.name}.")
-        await state.clear()
-        await show_profile(message)
 
 @router.callback_query(F.data == "referral")
 async def referral_link(callback: types.CallbackQuery):
@@ -118,7 +71,7 @@ async def referral_link(callback: types.CallbackQuery):
         link = await get_referral_link(db, user)
         await callback.message.edit_text(
             f"🔗 Ваша реферальная ссылка:\n{link}\n\n"
-            "Пригласите друга, и вы оба получите +1 день PRO (если друг совершит хотя бы один поиск).",
+            "Пригласите друга, и вы оба получите +3 дня PRO (если друг совершит хотя бы один поиск).",
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_profile")]
             ])
