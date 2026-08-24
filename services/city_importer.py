@@ -16,7 +16,6 @@ from database.models import FuelType, SourceType
 
 logger = logging.getLogger(__name__)
 
-# Словарь для быстрого преобразования слагов в названия
 SLUG_TO_CITY = {
     "moskva": "Москва",
     "spb": "Санкт-Петербург",
@@ -39,7 +38,8 @@ SLUG_TO_CITY = {
 
 BRAND_KEYWORDS = [
     'Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ',
-    'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'Татнефть'
+    'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'Татнефть',
+    'СКОН', 'Varta'
 ]
 
 def truncate_string(value: str, max_length: int = 255) -> str:
@@ -86,62 +86,46 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
                     return candidate.strip()
     return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
-def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float]]:
-    """
-    Парсит HTML и возвращает список станций:
-    (название, адрес, цена_АИ95, lat, lon)
-    """
+def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
     soup = BeautifulSoup(html, 'html.parser')
     stations = []
     current_name = None
     current_address = None
     current_price = None
 
-    # Ищем все блоки с ценами
-    # Структура: название сети (жирный текст), затем адрес, затем цены
     for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
         text = elem.get_text(strip=True)
+        if not text:
+            continue
 
-        # Проверяем, не является ли элемент названием сети
         is_brand = any(b in text for b in BRAND_KEYWORDS)
         if is_brand and len(text) < 100:
-            # Сохраняем предыдущую станцию, если она была
             if current_name and current_price is not None:
-                # Ищем координаты через парсинг (если есть) — пока заглушка
-                lat, lon = 0.0, 0.0
-                stations.append((current_name, current_address or "", current_price, lat, lon))
+                stations.append((current_name, current_address or "", current_price))
             current_name = text
             current_address = None
             current_price = None
             continue
 
-        # Проверяем, является ли элемент адресом
         if current_name and not current_address:
             if 'ул' in text or 'пер' in text or 'шоссе' in text or 'просп' in text or 'пр-кт' in text:
                 current_address = text
                 continue
 
-        # Проверяем, есть ли цена АИ-95
         if current_name:
             match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
             if match:
                 try:
                     current_price = float(match.group(1).replace(',', '.'))
-                    # Нашли цену — сохраняем станцию
-                    if current_name:
-                        lat, lon = 0.0, 0.0
-                        stations.append((current_name, current_address or "", current_price, lat, lon))
-                        # Сбрасываем, чтобы не дублировать
-                        current_name = None
-                        current_address = None
-                        current_price = None
+                    stations.append((current_name, current_address or "", current_price))
+                    current_name = None
+                    current_address = None
+                    current_price = None
                 except ValueError:
                     pass
 
-    # Добавляем последнюю станцию, если она осталась
     if current_name and current_price is not None:
-        lat, lon = 0.0, 0.0
-        stations.append((current_name, current_address or "", current_price, lat, lon))
+        stations.append((current_name, current_address or "", current_price))
 
     return stations
 
@@ -158,8 +142,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         return {"error": "Не удалось загрузить страницу после нескольких попыток"}
 
     city_name = extract_city_name_from_html(html, slug)
-
-    # Парсим станции из HTML
     station_data = parse_stations_from_html(html)
     if not station_data:
         return {"error": "Не удалось найти АЗС на странице"}
@@ -198,7 +180,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         updated_prices = 0
 
         # ---- Шаг 3: Импортируем станции ----
-        for name, address, price, lat, lon in station_data:
+        for name, address, price in station_data:
             try:
                 async with db.begin_nested():
                     clean_name = truncate_string(name, 255)
@@ -214,13 +196,14 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         station = existing_addresses[norm_address]
 
                     if not station:
+                        # Создаём новую станцию с нулевыми координатами (их нет на странице)
                         station = await create_station(
                             db,
                             city_id=city.id,
                             name=clean_name,
                             address=clean_address,
-                            lat=lat or 0.0,
-                            lon=lon or 0.0,
+                            lat=0.0,
+                            lon=0.0,
                             brand=None
                         )
                         created += 1
@@ -246,7 +229,9 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 logger.error(f"Ошибка при обработке записи: {e}")
                 continue
 
-        await db.commit()
+        # ---- Шаг 4: НЕ вызываем commit() ----
+        # Все savepoints уже зафиксированы. Внешний commit не требуется.
+        # Сессия закроется автоматически при выходе из контекстного менеджера.
 
         return {
             "city": city_name,
