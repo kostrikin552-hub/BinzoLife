@@ -383,7 +383,7 @@ async def apply_referral(db: AsyncSession, new_user_id: int, referrer_code: str)
     referral = Referral(referrer_id=referrer.id, referred_user_id=new_user_id)
     db.add(referral)
     await db.commit()
-    await add_free_pro_days(db, referrer, 3)  # 3 дня вместо 1
+    await add_free_pro_days(db, referrer, 3)
     return True
 
 async def get_referral_link(db: AsyncSession, user: User) -> str:
@@ -760,7 +760,10 @@ async def get_funnel_users(db: AsyncSession, stage: int, days_after: int = None)
     if days_after is not None:
         cutoff = now - timedelta(days=days_after)
         query = query.where(
-            (User.last_funnel_message_at is None) | (User.last_funnel_message_at <= cutoff)
+            or_(
+                User.last_funnel_message_at.is_(None),
+                User.last_funnel_message_at <= cutoff
+            )
         )
     result = await db.execute(query)
     return result.scalars().all()
