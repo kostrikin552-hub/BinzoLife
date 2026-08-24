@@ -291,3 +291,80 @@ async def show_reviews(message: types.Message):
                 text = ""
         if text:
             await message.answer(text)
+from services.city_importer import import_city_from_url
+
+# ---------- Импорт города по URL ----------
+@router.message(Command("import_city"))
+async def import_city_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 2:
+        await message.answer("Использование: /import_city <url>\nПример: /import_city https://fuelprice.ru/moskva")
+        return
+
+    url = parts[1]
+    await message.answer(f"🔄 Начинаю импорт города из {url}...")
+
+    result = await import_city_from_url(url)
+    if "error" in result:
+        await message.answer(f"❌ Ошибка: {result['error']}")
+        return
+
+    text = (
+        f"✅ Импорт завершён!\n\n"
+        f"🏙 Город: {result['city']}\n"
+        f"🔗 Слаг: {result['slug']}\n"
+        f"📊 Создано АЗС: {result['stations_created']}\n"
+        f"🔄 Обновлено цен: {result['prices_updated']}"
+    )
+    await message.answer(text)
+
+# ---------- Импорт всех городов из списка ----------
+@router.message(Command("import_all_cities"))
+async def import_all_cities_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    # Список URL всех городов (кроме Красноярска)
+    city_urls = [
+        "https://fuelprice.ru/moskva",
+        "https://fuelprice.ru/novosibirsk",
+        "https://fuelprice.ru/ekaterinburg",
+        "https://fuelprice.ru/nizhniy-novgorod",
+        "https://fuelprice.ru/kazan",
+        "https://fuelprice.ru/chelyabinsk",
+        "https://fuelprice.ru/omsk",
+        "https://fuelprice.ru/samara",
+        "https://fuelprice.ru/rostov-na-donu",
+        "https://fuelprice.ru/ufa",
+        "https://fuelprice.ru/perm",
+        "https://fuelprice.ru/voronezh",
+        "https://fuelprice.ru/volgograd",
+        "https://fuelprice.ru/sankt-peterburg",
+    ]
+
+    await message.answer(f"🔄 Начинаю импорт всех {len(city_urls)} городов. Это может занять несколько минут...")
+
+    results = []
+    for url in city_urls:
+        try:
+            res = await import_city_from_url(url)
+            if "error" in res:
+                results.append(f"❌ {url} — ошибка: {res['error']}")
+            else:
+                results.append(f"✅ {res['city']} — создано АЗС: {res['stations_created']}, цен: {res['prices_updated']}")
+        except Exception as e:
+            results.append(f"❌ {url} — исключение: {e}")
+
+    # Отправляем отчёт
+    report = "📊 <b>Итоги импорта всех городов</b>\n\n" + "\n".join(results)
+    # Разбиваем на части, если сообщение длинное
+    if len(report) > 4000:
+        for i in range(0, len(report), 4000):
+            await message.answer(report[i:i+4000], parse_mode="HTML")
+    else:
+        await message.answer(report, parse_mode="HTML")
