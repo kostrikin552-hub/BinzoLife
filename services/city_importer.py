@@ -15,7 +15,6 @@ from database.models import FuelType, SourceType
 
 logger = logging.getLogger(__name__)
 
-# Словарь для преобразования слагов в названия городов (если не удаётся извлечь из страницы)
 SLUG_TO_CITY = {
     "moskva": "Москва",
     "spb": "Санкт-Петербург",
@@ -53,7 +52,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     # 1. Определяем название города
     city_name = SLUG_TO_CITY.get(slug)
     if not city_name:
-        # Пробуем извлечь из title
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
@@ -74,18 +72,15 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
             if match:
                 city_name = match.group(1).strip()
             else:
-                # fallback: удаляем лишние слова
                 parts = title_text.split()
                 if parts:
-                    # пробуем взять последнее слово, если оно не "цены"
                     last = parts[-1].replace('Цены', '').strip()
                     if last:
                         city_name = last
         if not city_name:
             city_name = slug.capitalize()
 
-    # 2. Парсим страницу (повторно, если уже скачали — можно передать html)
-    # Для простоты загружаем заново, но можно использовать уже полученный html
+    # 2. Загружаем страницу для парсинга АЗС (повторно, но можно передать html)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
@@ -99,42 +94,30 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         except Exception as e:
             return {"error": f"Ошибка загрузки: {e}"}
 
-    soup = BeautifulSoup(html, 'lxml')
-
-    # Ищем данные АЗС
     station_pattern = re.compile(
         r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]'
     )
     matches = station_pattern.findall(html)
-
     if not matches:
         return {"error": "Не удалось найти данные АЗС на странице"}
 
     async with AsyncSessionLocal() as db:
-        # Получаем или создаём город
         city = await get_or_create_city(db, city_name)
         if not city:
             return {"error": f"Не удалось создать город {city_name}"}
 
-        # Устанавливаем слаг, обрабатывая возможный дубликат
+        # Проверяем существование слага и устанавливаем, если отсутствует
         try:
-            await set_city_slug(db, city.id, slug)
-        except IntegrityError as e:
-            # Если слаг уже существует, проверяем, принадлежит ли он этому же городу
-            await db.rollback()
             existing_slug = await get_city_slug(db, city_name)
-            if existing_slug and existing_slug == slug:
-                # Слаг уже установлен для этого города — ничего не делаем
-                logger.info(f"Слаг {slug} уже существует для города {city_name}")
+            if existing_slug:
+                logger.info(f"Слаг для города {city_name} уже существует: {existing_slug}, пропускаем установку")
             else:
-                # Слаг принадлежит другому городу — сообщаем об ошибке
-                logger.error(f"Слаг {slug} уже занят другим городом. Не удалось установить слаг для {city_name}")
-                # Но продолжаем импорт (без слага парсер цен не будет работать, но станции добавим)
-                # Можно также попытаться использовать альтернативный слаг, но пока просто продолжим.
-                pass
+                await set_city_slug(db, city.id, slug)
+                logger.info(f"Слаг {slug} установлен для города {city_name}")
         except Exception as e:
+            logger.error(f"Ошибка при работе со слагом для {city_name}: {e}")
             await db.rollback()
-            logger.error(f"Ошибка при установке слага: {e}")
+            # Продолжаем импорт станций даже без слага
 
         existing_stations = await get_stations_by_city(db, city.id)
         existing_names = {s.name.lower(): s for s in existing_stations}
