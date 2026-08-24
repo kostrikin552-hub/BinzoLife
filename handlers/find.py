@@ -105,9 +105,7 @@ async def perform_search(message: types.Message, state: FSMContext):
 
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
-        # ---- ТРИГГЕР ПЕРВОГО ПОИСКА (ВОРОНКА) ----
         await set_first_search(db, user.id)
-        # --------------------------------------
         is_pro = await check_pro(user.telegram_id) if user else False
 
         stations = await db.execute(
@@ -200,7 +198,7 @@ async def perform_search(message: types.Message, state: FSMContext):
 
         await log_action(db, user.id, "search_result")
 
-# ---------- Функция отображения карточки АЗС ----------
+# ---------- Функция отображения карточки ----------
 async def show_station_card(message: types.Message, result: dict, index: int, total: int, is_pro: bool, state: FSMContext):
     station = result["station"]
     price = result["price"]
@@ -248,53 +246,63 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
         total=total
     )
 
-    await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    try:
+        await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка при отправке карточки: {e}", exc_info=True)
 
-# ---------- Обработчик кнопки "Показать ещё 2 варианта" ----------
+# ---------- Обработчик "Показать ещё 2 варианта" ----------
 @router.callback_query(lambda c: c.data.startswith("more_"))
 async def show_more(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    data = await state.get_data()
-    all_results = data.get("all_results", [])
-    current_index = data.get("current_index", 0)
-    is_pro = data.get("is_pro", False)
+    try:
+        data = await state.get_data()
+        all_results = data.get("all_results", [])
+        current_index = data.get("current_index", 0)
+        is_pro = data.get("is_pro", False)
 
-    next_index = current_index + 1
-    if next_index >= len(all_results):
-        await callback.message.answer("Это все доступные варианты.")
-        return
+        next_index = current_index + 1
+        if next_index >= len(all_results):
+            await callback.message.answer("Это все доступные варианты.")
+            return
 
-    more_results = all_results[next_index:next_index+2]
-    text = "📋 Дополнительные варианты:\n\n"
-    for i, res in enumerate(more_results, start=next_index+1):
-        station = res["station"]
-        price = res["price"]
-        distance = res["distance_km"]
-        availability = res["availability"].value if res["availability"] else "GRAY"
-        text += (
-            f"{i}. {station.name}\n"
-            f"   Цена: {price:.2f} ₽, наличие: {availability}, расстояние: {distance:.1f} км\n"
-            f"   🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>\n\n"
-        )
+        more_results = all_results[next_index:next_index+2]
+        text = "📋 Дополнительные варианты:\n\n"
+        for i, res in enumerate(more_results, start=next_index+1):
+            station = res["station"]
+            price = res["price"]
+            distance = res["distance_km"]
+            availability = res["availability"].value if res["availability"] else "GRAY"
+            text += (
+                f"{i}. {station.name}\n"
+                f"   Цена: {price:.2f} ₽, наличие: {availability}, расстояние: {distance:.1f} км\n"
+                f"   🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>\n\n"
+            )
 
-    await state.update_data(current_index=next_index+1)
+        await state.update_data(current_index=next_index+1)
 
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔙 Назад к лучшей", callback_data="back_to_best")],
-        [InlineKeyboardButton(text="🔄 Найти заново", callback_data="restart_search")]
-    ])
-    await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🔙 Назад к лучшей", callback_data="back_to_best")],
+            [InlineKeyboardButton(text="🔄 Найти заново", callback_data="restart_search")]
+        ])
+        await callback.message.answer(text, reply_markup=kb, parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Ошибка в show_more: {e}", exc_info=True)
+        await callback.message.answer("Произошла ошибка. Попробуйте начать поиск заново.")
 
 @router.callback_query(F.data == "back_to_best")
 async def back_to_best(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    data = await state.get_data()
-    all_results = data.get("all_results", [])
-    is_pro = data.get("is_pro", False)
-    if all_results:
-        await show_station_card(callback.message, all_results[0], 0, len(all_results), is_pro, state)
-    else:
-        await callback.message.answer("Нет сохранённых результатов.", reply_markup=main_menu_keyboard())
+    try:
+        data = await state.get_data()
+        all_results = data.get("all_results", [])
+        is_pro = data.get("is_pro", False)
+        if all_results:
+            await show_station_card(callback.message, all_results[0], 0, len(all_results), is_pro, state)
+        else:
+            await callback.message.answer("Нет сохранённых результатов.", reply_markup=main_menu_keyboard())
+    except Exception as e:
+        logger.error(f"Ошибка в back_to_best: {e}", exc_info=True)
 
 @router.callback_query(F.data == "restart_search")
 async def restart_search(callback: types.CallbackQuery, state: FSMContext):
@@ -302,7 +310,7 @@ async def restart_search(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_find(callback.message, state)
 
-# ---------- Переход в профиль ----------
+# ---------- Остальные обработчики ----------
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
