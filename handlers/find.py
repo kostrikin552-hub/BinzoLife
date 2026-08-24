@@ -325,7 +325,7 @@ async def restart_search(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_find(callback.message, state)
 
-# ---------- Остальные обработчики (без изменений) ----------
+# ---------- Остальные обработчики (с проверками) ----------
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
@@ -337,7 +337,13 @@ async def go_profile_callback(callback: types.CallbackQuery):
 async def follow_price(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] follow_ вызван: {callback.data}")
     await callback.answer()
-    station_id = int(callback.data.split("_")[1])
+    try:
+        station_id = int(callback.data.split("_")[1])
+    except (IndexError, ValueError) as e:
+        logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
+        await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
+        return
+
     if not await check_pro(callback.from_user.id):
         await callback.message.answer(
             "⛔ <b>Уведомления о снижении цены доступны только для PRO-подписчиков</b>\n\n"
@@ -382,7 +388,17 @@ async def follow_price(callback: types.CallbackQuery):
 async def subscribe_availability(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
-    station_id = int(callback.data.split("_")[2])
+    try:
+        # alert_avail_{station_id}
+        parts = callback.data.split("_")
+        if len(parts) < 3:
+            raise ValueError("Недостаточно частей в callback")
+        station_id = int(parts[2])
+    except (IndexError, ValueError) as e:
+        logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
+        await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
+        return
+
     if not await check_pro(callback.from_user.id):
         await callback.message.answer(
             "⛔ <b>Уведомления о появлении топлива доступны только для PRO-подписчиков</b>\n\n"
@@ -393,7 +409,6 @@ async def subscribe_availability(callback: types.CallbackQuery):
             reply_markup=pro_purchase_keyboard()
         )
         return
-    station_id = int(callback.data.split("_")[2])
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
@@ -418,7 +433,15 @@ async def subscribe_availability(callback: types.CallbackQuery):
 async def start_report_price(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] report_price_ вызван: {callback.data}")
     await callback.answer()
-    station_id = int(callback.data.split("_")[2])
+    try:
+        parts = callback.data.split("_")
+        if len(parts) < 3:
+            raise ValueError("Недостаточно частей в callback")
+        station_id = int(parts[2])
+    except (IndexError, ValueError) as e:
+        logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
+        await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
+        return
     await state.update_data(report_station_id=station_id)
     await state.set_state(ReportPriceStates.waiting_price)
     await callback.message.answer(
@@ -483,6 +506,13 @@ async def cancel_report(callback: types.CallbackQuery, state: FSMContext):
 async def show_graph(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] graph_ вызван: {callback.data}")
     await callback.answer()
+    try:
+        station_id = int(callback.data.split("_")[1])
+    except (IndexError, ValueError) as e:
+        logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
+        await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
+        return
+
     if not await check_pro(callback.from_user.id):
         await callback.message.answer(
             "⛔ <b>График цен доступен только для PRO-подписчиков</b>\n\n"
@@ -494,7 +524,6 @@ async def show_graph(callback: types.CallbackQuery):
             reply_markup=pro_purchase_keyboard()
         )
         return
-    station_id = int(callback.data.split("_")[1])
     logger.info(f"Генерируем график для station_id={station_id}")
     try:
         graph_bytes = await generate_price_graph(station_id, FuelType.AI_95, days=30)
