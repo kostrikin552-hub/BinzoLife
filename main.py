@@ -3,7 +3,6 @@ import logging
 import asyncio
 from datetime import datetime
 
-# ---- НАСТРОЙКА ЛОГИРОВАНИЯ ----
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -24,7 +23,7 @@ from sqlalchemy.exc import ProgrammingError
 from config import settings
 from database.session import engine, AsyncSessionLocal
 from database.models import Base, City, Station, FuelPrice, AvailabilityReport, FuelType, AvailabilityStatus, SourceType
-from handlers import start, menu, find, profile, admin, notifications, common, payments, review, emergency
+from handlers import start, menu, find, profile, admin, notifications, common, payments, review, emergency, contest
 from services.notifications import check_notifications
 from services.fuel import refresh_prices
 from database.crud import expire_old_prices, expire_old_availability, check_and_award_achievements
@@ -38,7 +37,6 @@ current_bot = None
 
 logger.info("Бот и диспетчер созданы")
 
-# ---- РЕГИСТРАЦИЯ ВСЕХ РОУТЕРОВ ----
 dp.include_router(start.router)
 dp.include_router(menu.router)
 dp.include_router(find.router)
@@ -49,10 +47,11 @@ dp.include_router(common.router)
 dp.include_router(payments.router)
 dp.include_router(review.router)
 dp.include_router(emergency.router)
+dp.include_router(contest.router)
 
 logger.info("Все роутеры зарегистрированы")
 
-# ---------- HTTP обработчики ----------
+# ---------- HTTP ----------
 async def health_handler(request):
     return web.Response(text='{"status":"ok"}', content_type='application/json')
 
@@ -135,6 +134,10 @@ async def ensure_schema_updates():
     await add_column_if_not_exists("users", "total_saved", "FLOAT", "0")
     await add_column_if_not_exists("users", "referral_code", "VARCHAR(20)")
     await add_column_if_not_exists("users", "referred_by", "BIGINT")
+    await add_column_if_not_exists("users", "auto_renew", "BOOLEAN", "FALSE")
+    await add_column_if_not_exists("users", "first_search_at", "TIMESTAMP WITH TIME ZONE")
+    await add_column_if_not_exists("users", "funnel_stage", "INTEGER", "0")
+    await add_column_if_not_exists("users", "last_funnel_message_at", "TIMESTAMP WITH TIME ZONE")
     await create_table_if_not_exists("city_slugs", """
         CREATE TABLE city_slugs (
             city_id INTEGER PRIMARY KEY REFERENCES cities(id),
@@ -179,7 +182,7 @@ async def ensure_schema_updates():
 # ---------- Фоновые задачи ----------
 async def expire_old_data_periodically():
     while True:
-        await asyncio.sleep(1800)  # 30 минут
+        await asyncio.sleep(1800)
         try:
             async with AsyncSessionLocal() as db:
                 await expire_old_prices(db, hours=12)
@@ -190,7 +193,7 @@ async def expire_old_data_periodically():
 
 async def check_achievements_periodically():
     while True:
-        await asyncio.sleep(3600)  # час
+        await asyncio.sleep(3600)
         try:
             async with AsyncSessionLocal() as db:
                 users_with_reports = await db.execute(
@@ -201,6 +204,16 @@ async def check_achievements_periodically():
             logger.info("Достижения проверены")
         except Exception as e:
             logger.error(f"Ошибка в check_achievements_periodically: {e}")
+
+async def funnel_worker():
+    """Фоновая задача для обработки воронки каждые 10 минут"""
+    from services.funnel import process_funnel
+    while True:
+        try:
+            await process_funnel()
+        except Exception as e:
+            logger.error(f"Ошибка в funnel_worker: {e}")
+        await asyncio.sleep(600)  # 10 минут
 
 # ---------- Загрузка начальных данных ----------
 async def seed_initial_data():
@@ -306,6 +319,7 @@ async def on_startup():
     await seed_initial_data()
     asyncio.create_task(expire_old_data_periodically())
     asyncio.create_task(check_achievements_periodically())
+    asyncio.create_task(funnel_worker())
     logger.info("Бот запущен, фоновые задачи активны")
     try:
         await bot.send_message(settings.ADMIN_ID, "✅ Бот успешно запущен и готов к работе!")
