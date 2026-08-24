@@ -369,7 +369,7 @@ async def import_all_cities_cmd(message: types.Message):
     else:
         await message.answer(report, parse_mode=None)
 
-# ---------- Установка координат города (с поддержкой названий из нескольких слов) ----------
+# ---------- Установка координат города (с поддержкой пробелов в названии) ----------
 @router.message(Command("set_city_coords"))
 async def set_city_coords_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -377,10 +377,14 @@ async def set_city_coords_cmd(message: types.Message):
         return
 
     text = message.text
-    # Ищем последние два числа с плавающей точкой в строке
-    # Пример: /set_city_coords Нижний Новгород 56.2965 43.9361
-    match = re.search(r'(.+?)\s+([\d.]+)\s+([\d.]+)$', text)
-    if not match:
+    # Удаляем команду из строки
+    cmd = "/set_city_coords"
+    if text.startswith(cmd):
+        text = text[len(cmd):].strip()
+
+    # Разбиваем оставшуюся строку на токены
+    tokens = text.split()
+    if len(tokens) < 3:
         await message.answer(
             "❌ Неверный формат. Используйте:\n"
             "/set_city_coords <город> <lat> <lon>\n"
@@ -388,13 +392,16 @@ async def set_city_coords_cmd(message: types.Message):
         )
         return
 
-    city_name = match.group(1).strip()
+    # Последние два токена — координаты
     try:
-        lat = float(match.group(2))
-        lon = float(match.group(3))
+        lat = float(tokens[-2])
+        lon = float(tokens[-1])
     except ValueError:
         await message.answer("❌ Неверный формат координат. Используйте числа с точкой.")
         return
+
+    # Всё остальное — название города (объединяем через пробел)
+    city_name = " ".join(tokens[:-2])
 
     async with AsyncSessionLocal() as db:
         city = await get_city_by_name(db, city_name, include_inactive=True)
