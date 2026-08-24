@@ -9,7 +9,8 @@ from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, log_action, get_city_by_id, get_station_by_id,
     get_latest_price, create_notification, save_price,
-    get_latest_fresh_price, get_avg_price_30d
+    get_latest_fresh_price, get_avg_price_30d,
+    set_first_search
 )
 from database.models import FuelType, AvailabilityStatus, SourceType, Station, FuelPrice, AvailabilityReport
 from services.rating import calculate_rating
@@ -37,7 +38,6 @@ async def start_find(message: types.Message, state: FSMContext):
 
 @router.message(FindStates.choosing_fuel, F.text == "⛽ АИ-95")
 async def choose_fuel(message: types.Message, state: FSMContext):
-    # Проверяем город у пользователя
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
         if not user:
@@ -63,10 +63,8 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Сохраняем город и топливо в состояние
         await state.update_data(city_id=city.id, lat=city.latitude, lon=city.longitude, fuel_type=FuelType.AI_95)
 
-    # Предлагаем выбрать критерий сортировки
     await state.set_state(FindStates.choosing_sort)
     await message.answer(
         "⛽ Как будем выбирать лучшую АЗС?\n\n"
@@ -107,9 +105,11 @@ async def perform_search(message: types.Message, state: FSMContext):
 
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
+        # ---- ТРИГГЕР ПЕРВОГО ПОИСКА (ВОРОНКА) ----
+        await set_first_search(db, user.id)
+        # --------------------------------------
         is_pro = await check_pro(user.telegram_id) if user else False
 
-        # Получаем активные станции в городе
         stations = await db.execute(
             select(Station).where(Station.city_id == city_id, Station.is_active == True)
         )
@@ -121,7 +121,6 @@ async def perform_search(message: types.Message, state: FSMContext):
 
         station_ids = [s.id for s in stations]
 
-        # Последние свежие цены
         price_subq = (
             select(FuelPrice.station_id, FuelPrice.fuel_type, func.max(FuelPrice.recorded_at).label("max_date"))
             .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type, FuelPrice.is_fresh == True)
@@ -138,7 +137,6 @@ async def perform_search(message: types.Message, state: FSMContext):
         price_result = await db.execute(price_stmt)
         prices = {p.station_id: p for p in price_result.scalars().all()}
 
-        # Последние свежие отчёты о наличии
         avail_subq = (
             select(AvailabilityReport.station_id, AvailabilityReport.fuel_type, func.max(AvailabilityReport.recorded_at).label("max_date"))
             .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type, AvailabilityReport.is_fresh == True)
@@ -155,10 +153,8 @@ async def perform_search(message: types.Message, state: FSMContext):
         avail_result = await db.execute(avail_stmt)
         avails = {a.station_id: a for a in avail_result.scalars().all()}
 
-        # Средние цены за 30 дней
         avg_price = await get_avg_price_30d(db, city_id, fuel_type) or 0
 
-        # Формируем результаты для каждой станции
         results = []
         for station in stations:
             price_rec = prices.get(station.id)
@@ -172,7 +168,7 @@ async def perform_search(message: types.Message, state: FSMContext):
                 price_record=price_rec,
                 availability_record=avail_rec,
                 avg_price_30d=avg_price or price_rec.price,
-                min_price_30d=0,   # не используем для сортировки
+                min_price_30d=0,
                 max_price_30d=0
             )
             results.append({
@@ -191,21 +187,17 @@ async def perform_search(message: types.Message, state: FSMContext):
             await state.clear()
             return
 
-        # Сортировка
         if sort_mode == "price":
             results.sort(key=lambda x: x["price"])
         elif sort_mode == "distance":
             results.sort(key=lambda x: x["distance_km"])
-        else:  # rating
+        else:
             results.sort(key=lambda x: x["rating"], reverse=True)
 
-        # Сохраняем все результаты в состояние для кнопки "Показать ещё"
         await state.update_data(all_results=results, current_index=0, is_pro=is_pro)
 
-        # Показываем первый результат
         await show_station_card(message, results[0], 0, len(results), is_pro, state)
 
-        # Логируем поиск
         await log_action(db, user.id, "search_result")
 
 # ---------- Функция отображения карточки АЗС ----------
@@ -223,12 +215,10 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
     status_time = format_time_ago(availability_time) if availability_time else "неизвестно"
     price_time_str = format_time_ago(price_time)
 
-    # Калькулятор стоимости поездки
-    tank_volume = 50  # по умолчанию, можно брать из профиля
-    fuel_consumption = 10  # л/100км, можно брать из профиля
+    tank_volume = 50
+    fuel_consumption = 10
     cost_to_drive = round((distance_km / 100) * fuel_consumption * price, 2)
 
-    # Текст карточки
     text = (
         f"🏆 Рейтинг: {rating}/100\n"
         f"⛽ {station.name}\n"
@@ -240,14 +230,12 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
         f"📌 {explanation}\n"
     )
 
-    # Триггер потери (для не-PRO)
     if not is_pro:
         text += (
             "\n⚠️ <i>Цены и наличие обновляются каждые 2 часа. "
             "Чтобы получать уведомления об изменениях — подключи PRO за 99 ₽/мес.</i>"
         )
 
-    # Клавиатура
     keyboard = station_action_keyboard(
         station_id=station.id,
         price=price,
@@ -271,13 +259,11 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
     current_index = data.get("current_index", 0)
     is_pro = data.get("is_pro", False)
 
-    # Показываем следующие 2 результата
     next_index = current_index + 1
     if next_index >= len(all_results):
         await callback.message.answer("Это все доступные варианты.")
         return
 
-    # Берём до 2 следующих
     more_results = all_results[next_index:next_index+2]
     text = "📋 Дополнительные варианты:\n\n"
     for i, res in enumerate(more_results, start=next_index+1):
@@ -291,7 +277,6 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
             f"   🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>\n\n"
         )
 
-    # Обновляем индекс в состоянии
     await state.update_data(current_index=next_index+1)
 
     kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -317,10 +302,7 @@ async def restart_search(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_find(callback.message, state)
 
-# ---------- Остальные обработчики (PRO-функции, сообщить цену, график и т.д.) ----------
-# Они уже были в предыдущей версии, но я переиспользую их с небольшими изменениями
-# (например, подпись на уведомления и график теперь используют is_pro из состояния)
-
+# ---------- Переход в профиль ----------
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
@@ -408,7 +390,7 @@ async def subscribe_availability(callback: types.CallbackQuery):
     await callback.answer("Вы подписаны на уведомления о появлении топлива на этой АЗС")
     await callback.message.answer(f"🔔 Вы будете получать уведомления, когда на {station.name} появится АИ-95.")
 
-# ---------- Сообщить цену (краудсорсинг) ----------
+# ---------- Сообщить цену ----------
 @router.callback_query(lambda c: c.data.startswith("report_price_"))
 async def start_report_price(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] report_price_ вызван: {callback.data}")
