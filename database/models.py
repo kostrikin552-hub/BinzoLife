@@ -111,7 +111,12 @@ class User(Base):
     total_saved = Column(Float, default=0.0)
     referral_code = Column(String(20), unique=True, nullable=True)
     referred_by = Column(BigInteger, nullable=True)
-    auto_renew = Column(Boolean, default=False)  # <-- НОВОЕ ПОЛЕ ДЛЯ АВТОПРОДЛЕНИЯ
+    auto_renew = Column(Boolean, default=False)
+    # ---- НОВЫЕ ПОЛЯ ДЛЯ ВОРОНКИ ----
+    first_search_at = Column(DateTime(timezone=True), nullable=True)
+    funnel_stage = Column(Integer, default=0)
+    last_funnel_message_at = Column(DateTime(timezone=True), nullable=True)
+    # --------------------------------
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
