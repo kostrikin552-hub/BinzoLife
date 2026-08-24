@@ -15,7 +15,6 @@ from keyboards.inline import (
 logger = logging.getLogger(__name__)
 router = Router()
 
-# ---------- Основное приветствие ----------
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -46,7 +45,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
-# ---------- Обработчик кнопки "Выбрать город из списка" ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
@@ -55,7 +53,6 @@ async def city_list(callback: types.CallbackQuery):
         reply_markup=popular_cities_keyboard()
     )
 
-# ---------- Обработчик выбора города из списка (общий для всех случаев) ----------
 @router.callback_query(lambda c: c.data.startswith("city_select_"))
 async def city_select(callback: types.CallbackQuery):
     city_name = callback.data.split("_")[2]
@@ -76,7 +73,6 @@ async def city_select(callback: types.CallbackQuery):
             user.city_id = city.id
             await db.commit()
 
-    # Удаляем сообщение с выбором и показываем главное меню
     await callback.message.delete()
     await callback.message.answer(
         f"✅ Город {city.name} сохранён!\n"
