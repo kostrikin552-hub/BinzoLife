@@ -1,16 +1,29 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# ---------- Клавиатура для выбора города ----------
+# ---------- Клавиатура для выбора города (только список) ----------
 def city_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📍 Определить по IP", callback_data="city_by_ip")],
-        [InlineKeyboardButton(text="✏️ Ввести вручную", callback_data="city_manual")],
-        [InlineKeyboardButton(text="🚀 Сразу искать", callback_data="search_now")]
+        [InlineKeyboardButton(text="📋 Выбрать город из списка", callback_data="city_list")]
     ])
 
-# ---------- Клавиатура для приветствия (первое сообщение) ----------
-def welcome_keyboard() -> InlineKeyboardMarkup:
-    return city_choice_keyboard()  # та же самая, для удобства
+# ---------- Клавиатура со списком популярных городов ----------
+def popular_cities_keyboard() -> InlineKeyboardMarkup:
+    cities = [
+        "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург",
+        "Казань", "Нижний Новгород", "Челябинск", "Омск",
+        "Самара", "Ростов-на-Дону", "Уфа", "Красноярск",
+        "Пермь", "Воронеж", "Волгоград"
+    ]
+    buttons = []
+    row = []
+    for i, city in enumerate(cities):
+        row.append(InlineKeyboardButton(text=city, callback_data=f"city_select_{city}"))
+        if len(row) == 3:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # ---------- Клавиатура для повторного запуска (Reply) ----------
 def welcome_back_keyboard() -> ReplyKeyboardMarkup:
@@ -67,7 +80,6 @@ def station_action_keyboard(station_id: int, price: float, availability_status, 
         buttons.append([InlineKeyboardButton(text="🗺 Показать все АЗС на карте", url=map_url)])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ---------- Остальные клавиатуры ----------
 def notification_action_keyboard(notif_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отписаться", callback_data=f"unsub_{notif_id}")]
