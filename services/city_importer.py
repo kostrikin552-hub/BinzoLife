@@ -175,7 +175,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         updated_prices = 0
         updated_stations = 0
 
-        # ---- Шаг 3: Импортируем станции ----
+        # ---- Шаг 3: Импортируем станции с использованием savepoints ----
         for match in matches:
             try:
                 async with db.begin_nested():
@@ -248,26 +248,26 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         if norm_address:
                             existing_addresses[norm_address] = station
 
-                    try:
-                        await save_price(
-                            db,
-                            station.id,
-                            FuelType.AI_95,
-                            price,
-                            SourceType.PARSER,
-                            confidence=0.7,
-                            recorded_at=datetime.now(timezone.utc)
-                        )
-                        updated_prices += 1
-                    except IntegrityError:
-                        # Дубликат цены — пропускаем
-                        await db.rollback()
-                        logger.debug(f"Цена {price} для станции {station.id} уже существует, пропускаем")
+                    await save_price(
+                        db,
+                        station.id,
+                        FuelType.AI_95,
+                        price,
+                        SourceType.PARSER,
+                        confidence=0.7,
+                        recorded_at=datetime.now(timezone.utc)
+                    )
+                    updated_prices += 1
 
+            except IntegrityError as e:
+                # Дубликат цены или другой конфликт целостности — просто логируем и пропускаем
+                logger.debug(f"IntegrityError при обработке записи (вероятно дубликат): {e}")
+                continue
             except Exception as e:
                 logger.error(f"Ошибка при обработке записи: {e}")
                 continue
 
+        # ---- Шаг 4: Фиксируем внешнюю транзакцию ----
         await db.commit()
 
         return {
