@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, create_station, save_price, set_city_slug,
-    get_or_create_city, get_stations_by_city, get_city_slug
+    get_or_create_city, get_stations_by_city, get_city_slug, update_user
 )
 from database.models import FuelType, SourceType
 
@@ -146,8 +146,8 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     if not station_data:
         return {"error": "Не удалось найти АЗС на странице"}
 
+    # ---- Шаг 1: Создаём город и устанавливаем слаг в отдельной сессии ----
     async with AsyncSessionLocal() as db:
-        # ---- Шаг 1: Создаём город и устанавливаем слаг ----
         async with db.begin():
             city = await get_or_create_city(db, city_name)
             if not city:
@@ -171,71 +171,72 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
             else:
                 logger.info(f"Слаг для города {city_name} уже существует: {existing_slug}")
 
-        # ---- Шаг 2: Получаем существующие станции ----
-        existing_stations = await get_stations_by_city(db, city.id)
-        existing_names = {s.name.lower(): s for s in existing_stations}
-        existing_addresses = {s.address.lower(): s for s in existing_stations}
+    # ---- Шаг 2: Импортируем станции (каждая в своей сессии) ----
+    created = 0
+    updated_prices = 0
+    city_id = city.id
 
-        created = 0
-        updated_prices = 0
+    for name, address, price in station_data:
+        try:
+            async with AsyncSessionLocal() as db:
+                # Получаем город и станции в этой сессии
+                city = await get_city_by_id(db, city_id)
+                if not city:
+                    logger.error(f"Город {city_id} не найден")
+                    continue
 
-        # ---- Шаг 3: Импортируем станции ----
-        for name, address, price in station_data:
-            try:
-                async with db.begin_nested():
-                    clean_name = truncate_string(name, 255)
-                    clean_address = truncate_string(address, 255)
+                existing_stations = await get_stations_by_city(db, city.id)
+                existing_names = {s.name.lower(): s for s in existing_stations}
+                existing_addresses = {s.address.lower(): s for s in existing_stations}
 
-                    station = None
-                    norm_name = clean_name.lower()
-                    norm_address = clean_address.lower() if clean_address else ''
+                clean_name = truncate_string(name, 255)
+                clean_address = truncate_string(address, 255)
 
-                    if norm_name in existing_names:
-                        station = existing_names[norm_name]
-                    elif norm_address and norm_address in existing_addresses:
-                        station = existing_addresses[norm_address]
+                station = None
+                norm_name = clean_name.lower()
+                norm_address = clean_address.lower() if clean_address else ''
 
-                    if not station:
-                        # Создаём новую станцию с нулевыми координатами (их нет на странице)
-                        station = await create_station(
-                            db,
-                            city_id=city.id,
-                            name=clean_name,
-                            address=clean_address,
-                            lat=0.0,
-                            lon=0.0,
-                            brand=None
-                        )
-                        created += 1
-                        existing_names[norm_name] = station
-                        if norm_address:
-                            existing_addresses[norm_address] = station
+                if norm_name in existing_names:
+                    station = existing_names[norm_name]
+                elif norm_address and norm_address in existing_addresses:
+                    station = existing_addresses[norm_address]
 
-                    await save_price(
+                if not station:
+                    # Создаём новую станцию с нулевыми координатами
+                    station = await create_station(
                         db,
-                        station.id,
-                        FuelType.AI_95,
-                        price,
-                        SourceType.PARSER,
-                        confidence=0.7,
-                        recorded_at=datetime.now(timezone.utc)
+                        city_id=city.id,
+                        name=clean_name,
+                        address=clean_address,
+                        lat=0.0,
+                        lon=0.0,
+                        brand=None
                     )
-                    updated_prices += 1
+                    created += 1
 
-            except IntegrityError as e:
-                logger.debug(f"IntegrityError при обработке записи: {e}")
-                continue
-            except Exception as e:
-                logger.error(f"Ошибка при обработке записи: {e}")
-                continue
+                # Сохраняем цену
+                await save_price(
+                    db,
+                    station.id,
+                    FuelType.AI_95,
+                    price,
+                    SourceType.PARSER,
+                    confidence=0.7,
+                    recorded_at=datetime.now(timezone.utc)
+                )
+                updated_prices += 1
+                # Коммит внутри сессии произойдёт автоматически при выходе из блока async with
 
-        # ---- Шаг 4: НЕ вызываем commit() ----
-        # Все savepoints уже зафиксированы. Внешний commit не требуется.
-        # Сессия закроется автоматически при выходе из контекстного менеджера.
+        except IntegrityError as e:
+            logger.debug(f"IntegrityError при обработке записи: {e}")
+            continue
+        except Exception as e:
+            logger.error(f"Ошибка при обработке записи: {e}")
+            continue
 
-        return {
-            "city": city_name,
-            "slug": slug,
-            "stations_created": created,
-            "prices_updated": updated_prices
-        }
+    return {
+        "city": city_name,
+        "slug": slug,
+        "stations_created": created,
+        "prices_updated": updated_prices
+    }
