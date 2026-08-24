@@ -345,7 +345,7 @@ async def import_all_cities_cmd(message: types.Message):
         "https://fuelprice.ru/perm",
         "https://fuelprice.ru/voronezh",
         "https://fuelprice.ru/volgograd",
-        "https://fuelprice.ru/tula",          # <-- заменён Петербург на Тулу
+        "https://fuelprice.ru/tula",
     ]
 
     await message.answer(f"🔄 Начинаю импорт всех {len(city_urls)} городов. Это может занять несколько минут...", parse_mode=None)
@@ -367,3 +367,37 @@ async def import_all_cities_cmd(message: types.Message):
             await message.answer(report[i:i+4000], parse_mode=None)
     else:
         await message.answer(report, parse_mode=None)
+
+# ---------- Установка координат города ----------
+@router.message(Command("set_city_coords"))
+async def set_city_coords_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    parts = message.text.split()
+    if len(parts) < 4:
+        await message.answer(
+            "Использование: /set_city_coords <город> <lat> <lon>\n"
+            "Пример: /set_city_coords Москва 55.7558 37.6173"
+        )
+        return
+
+    city_name = parts[1]
+    try:
+        lat = float(parts[2])
+        lon = float(parts[3])
+    except ValueError:
+        await message.answer("❌ Неверный формат координат. Используйте числа с точкой.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        city = await get_city_by_name(db, city_name, include_inactive=True)
+        if not city:
+            await message.answer(f"❌ Город '{city_name}' не найден в базе.")
+            return
+
+        city.latitude = lat
+        city.longitude = lon
+        await db.commit()
+        await message.answer(f"✅ Координаты для города '{city_name}' установлены: {lat}, {lon}")
