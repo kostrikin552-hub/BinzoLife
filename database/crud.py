@@ -709,3 +709,59 @@ async def get_potential_saving(db: AsyncSession, user_id: int) -> float:
     """
     # Заглушка — позже заменим на реальный расчёт
     return 0.0
+# ---------- Автопродление и проверка истекающих подписок ----------
+async def get_users_expiring_soon(db: AsyncSession, days: int = 3) -> List[User]:
+    """
+    Возвращает список пользователей, у которых PRO истекает через указанное количество дней.
+    """
+    now = datetime.now(timezone.utc)
+    target_date = now + timedelta(days=days)
+    result = await db.execute(
+        select(User)
+        .where(
+            User.is_pro == True,
+            User.pro_until >= now,
+            User.pro_until <= target_date,
+            User.auto_renew == True
+        )
+    )
+    return result.scalars().all()
+
+async def get_users_expired(db: AsyncSession) -> List[User]:
+    """
+    Возвращает пользователей, у которых PRO истёк, но флаг is_pro ещё True.
+    """
+    now = datetime.now(timezone.utc)
+    result = await db.execute(
+        select(User)
+        .where(
+            User.is_pro == True,
+            User.pro_until < now
+        )
+    )
+    return result.scalars().all()
+
+async def disable_expired_pro(db: AsyncSession):
+    """
+    Отключает PRO у пользователей, у которых истёк срок.
+    """
+    expired = await get_users_expired(db)
+    for user in expired:
+        user.is_pro = False
+        user.pro_until = None
+    await db.commit()
+    return len(expired)
+
+async def grant_emergency_search(db: AsyncSession, user_id: int):
+    """
+    Сохраняет факт оплаты экстренного поиска (можно хранить в отдельной таблице или в сессии).
+    Для простоты используем таблицу UserAction с action='emergency_paid'.
+    """
+    entry = UserAction(
+        user_id=user_id,
+        action="emergency_paid",
+        recorded_at=datetime.now(timezone.utc)
+    )
+    db.add(entry)
+    await db.commit()
+    return True
