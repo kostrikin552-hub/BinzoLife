@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
-    Enum, Text, Index, func, UniqueConstraint
+    Enum, Text, Index, func
 )
 from sqlalchemy.orm import declarative_base, relationship
 import enum
@@ -111,6 +111,7 @@ class User(Base):
     total_saved = Column(Float, default=0.0)
     referral_code = Column(String(20), unique=True, nullable=True)
     referred_by = Column(BigInteger, nullable=True)
+    auto_renew = Column(Boolean, default=False)  # <-- НОВОЕ ПОЛЕ ДЛЯ АВТОПРОДЛЕНИЯ
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
