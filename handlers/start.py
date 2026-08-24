@@ -4,7 +4,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 
 from database.session import AsyncSessionLocal
-from database.crud import get_user, create_user, get_city_by_name
+from database.crud import get_user, create_user, get_city_by_name, apply_referral
 from keyboards.inline import (
     welcome_back_keyboard,
     city_choice_keyboard,
@@ -17,14 +17,44 @@ router = Router()
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
+    args = message.text.split()
     user_id = message.from_user.id
     username = message.from_user.username
 
+    # ---- Обработка специальных параметров ----
+    if len(args) > 1:
+        if args[1].startswith("ref_"):
+            # Реферальная ссылка: применяем код после создания пользователя (если новый)
+            ref_code = args[1][4:]
+        elif args[1] == "pro":
+            # Прямой переход на страницу PRO
+            from handlers.payments import show_pro_info
+            await show_pro_info(message)
+            return
+        else:
+            ref_code = None
+    else:
+        ref_code = None
+
+    # ---- Основная логика приветствия ----
     async with AsyncSessionLocal() as db:
         user = await get_user(db, user_id)
         if not user:
             user = await create_user(db, user_id, username)
+            # Применяем реферальный код, если есть
+            if ref_code:
+                await apply_referral(db, user.id, ref_code)
+            # Город по умолчанию — Красноярск (если есть)
+            city = await get_city_by_name(db, "Красноярск")
+            if city:
+                user.city_id = city.id
+                await db.commit()
+        else:
+            # Если пользователь уже есть и перешёл по реферальной ссылке — попробуем применить
+            if ref_code:
+                await apply_referral(db, user.id, ref_code)
 
+        # Если город уже выбран — короткое приветствие
         if user.city_id:
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
@@ -33,6 +63,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             )
             return
 
+        # Город не выбран — полное приветствие с выбором города
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
             "Я знаю, где прямо сейчас есть 95-й бензин, по какой цене и сколько до него ехать.\n\n"
@@ -45,6 +76,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
+# ---------- Обработчики выбора города ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
@@ -79,4 +111,14 @@ async def city_select(callback: types.CallbackQuery):
         "Теперь я буду искать заправки рядом с тобой.\n\n"
         "Нажми «Найти заправку», чтобы начать.",
         reply_markup=welcome_back_keyboard()
+    )
+
+@router.callback_query(F.data == "search_now")
+async def search_now(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer(
+        "🚀 Для поиска заправки сначала выбери город.\n"
+        "Нажми /start, чтобы выбрать город.",
+        reply_markup=main_menu_keyboard()
     )
