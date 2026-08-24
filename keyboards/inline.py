@@ -1,13 +1,11 @@
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
-# ---------- Клавиатура для выбора города (только список) ----------
 def city_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📋 Выбрать город из списка", callback_data="city_list")]
     ])
 
-# ---------- Клавиатура со списком популярных городов ----------
-def popular_cities_keyboard() -> InlineKeyboardMarkup:
+def popular_cities_keyboard(with_back: bool = False) -> InlineKeyboardMarkup:
     cities = [
         "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург",
         "Казань", "Нижний Новгород", "Челябинск", "Омск",
@@ -23,9 +21,10 @@ def popular_cities_keyboard() -> InlineKeyboardMarkup:
             row = []
     if row:
         buttons.append(row)
+    if with_back:
+        buttons.append([InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# ---------- Клавиатура для повторного запуска (Reply) ----------
 def welcome_back_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
@@ -34,7 +33,6 @@ def welcome_back_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-# ---------- Основное меню (полное) ----------
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
@@ -45,7 +43,6 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-# ---------- Клавиатура для выбора сортировки ----------
 def sort_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 По рейтингу", callback_data="sort_rating")],
@@ -53,7 +50,6 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📍 По близости", callback_data="sort_distance")]
     ])
 
-# ---------- Клавиатура для карточки АЗС ----------
 def station_action_keyboard(station_id: int, price: float, availability_status, lat: float, lon: float, city_id: int = None, is_pro: bool = False):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
     buttons = [
