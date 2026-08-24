@@ -1,6 +1,7 @@
 import csv
 import io
 import asyncio
+import re
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from config import settings
@@ -368,25 +369,29 @@ async def import_all_cities_cmd(message: types.Message):
     else:
         await message.answer(report, parse_mode=None)
 
-# ---------- Установка координат города ----------
+# ---------- Установка координат города (с поддержкой названий из нескольких слов) ----------
 @router.message(Command("set_city_coords"))
 async def set_city_coords_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Нет прав.")
         return
 
-    parts = message.text.split()
-    if len(parts) < 4:
+    text = message.text
+    # Ищем последние два числа с плавающей точкой в строке
+    # Пример: /set_city_coords Нижний Новгород 56.2965 43.9361
+    match = re.search(r'(.+?)\s+([\d.]+)\s+([\d.]+)$', text)
+    if not match:
         await message.answer(
-            "Использование: /set_city_coords <город> <lat> <lon>\n"
-            "Пример: /set_city_coords Москва 55.7558 37.6173"
+            "❌ Неверный формат. Используйте:\n"
+            "/set_city_coords <город> <lat> <lon>\n"
+            "Пример: /set_city_coords Нижний Новгород 56.2965 43.9361"
         )
         return
 
-    city_name = parts[1]
+    city_name = match.group(1).strip()
     try:
-        lat = float(parts[2])
-        lon = float(parts[3])
+        lat = float(match.group(2))
+        lon = float(match.group(3))
     except ValueError:
         await message.answer("❌ Неверный формат координат. Используйте числа с точкой.")
         return
