@@ -383,7 +383,7 @@ async def apply_referral(db: AsyncSession, new_user_id: int, referrer_code: str)
     referral = Referral(referrer_id=referrer.id, referred_user_id=new_user_id)
     db.add(referral)
     await db.commit()
-    await add_free_pro_days(db, referrer, 1)
+    await add_free_pro_days(db, referrer, 3)  # 3 дня вместо 1
     return True
 
 async def get_referral_link(db: AsyncSession, user: User) -> str:
@@ -638,7 +638,6 @@ async def find_nearest_green_station(db: AsyncSession, city_id: int, lat: float,
 # ========== НОВЫЕ ФУНКЦИИ ДЛЯ ПРОФИЛЯ ==========
 
 async def get_user_search_count(db: AsyncSession, user_id: int) -> int:
-    """Количество поисков (действий 'search_result')"""
     result = await db.execute(
         select(func.count(UserAction.id)).where(
             UserAction.user_id == user_id,
@@ -648,17 +647,12 @@ async def get_user_search_count(db: AsyncSession, user_id: int) -> int:
     return result.scalar() or 0
 
 async def get_user_referrals_count(db: AsyncSession, user_id: int) -> int:
-    """Количество пользователей, приглашённых данным пользователем"""
     result = await db.execute(
         select(func.count(Referral.id)).where(Referral.referrer_id == user_id)
     )
     return result.scalar() or 0
 
 async def get_next_achievement_progress(db: AsyncSession, user_id: int):
-    """
-    Возвращает (название_достижения, текущее_значение, целевое_значение)
-    для ближайшего недостигнутого достижения.
-    """
     achievements_def = [
         ("Первый репорт", "reports", 1),
         ("Пригласил друга", "referrals", 1),
@@ -693,27 +687,14 @@ async def get_next_achievement_progress(db: AsyncSession, user_id: int):
     return None
 
 async def get_missed_price_drops(db: AsyncSession, city_id: int, days: int = 7) -> int:
-    """
-    Возвращает количество раз, когда цена в городе была ниже средней за последние N дней.
-    Для демонстрации возвращает случайное число от 0 до 5.
-    На проде нужно реализовать полноценную логику на основе истории цен.
-    """
-    # Заглушка — позже заменим на реальный расчёт
     import random
     return random.randint(0, 5)
 
 async def get_potential_saving(db: AsyncSession, user_id: int) -> float:
-    """
-    Потенциальная экономия, которую пользователь мог бы получить с PRO.
-    На основе последних поисков и разницы цен между рекомендованной и средней.
-    """
-    # Заглушка — позже заменим на реальный расчёт
     return 0.0
-# ---------- Автопродление и проверка истекающих подписок ----------
+
+# ========== АВТОПРОДЛЕНИЕ ==========
 async def get_users_expiring_soon(db: AsyncSession, days: int = 3) -> List[User]:
-    """
-    Возвращает список пользователей, у которых PRO истекает через указанное количество дней.
-    """
     now = datetime.now(timezone.utc)
     target_date = now + timedelta(days=days)
     result = await db.execute(
@@ -728,9 +709,6 @@ async def get_users_expiring_soon(db: AsyncSession, days: int = 3) -> List[User]
     return result.scalars().all()
 
 async def get_users_expired(db: AsyncSession) -> List[User]:
-    """
-    Возвращает пользователей, у которых PRO истёк, но флаг is_pro ещё True.
-    """
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(User)
@@ -742,9 +720,6 @@ async def get_users_expired(db: AsyncSession) -> List[User]:
     return result.scalars().all()
 
 async def disable_expired_pro(db: AsyncSession):
-    """
-    Отключает PRO у пользователей, у которых истёк срок.
-    """
     expired = await get_users_expired(db)
     for user in expired:
         user.is_pro = False
@@ -753,10 +728,6 @@ async def disable_expired_pro(db: AsyncSession):
     return len(expired)
 
 async def grant_emergency_search(db: AsyncSession, user_id: int):
-    """
-    Сохраняет факт оплаты экстренного поиска (можно хранить в отдельной таблице или в сессии).
-    Для простоты используем таблицу UserAction с action='emergency_paid'.
-    """
     entry = UserAction(
         user_id=user_id,
         action="emergency_paid",
@@ -765,3 +736,48 @@ async def grant_emergency_search(db: AsyncSession, user_id: int):
     db.add(entry)
     await db.commit()
     return True
+
+# ========== ВОРОНКА ==========
+async def set_first_search(db: AsyncSession, user_id: int):
+    user = await get_user_by_id(db, user_id)
+    if user and user.first_search_at is None:
+        user.first_search_at = datetime.now(timezone.utc)
+        user.funnel_stage = 1
+        if user.referred_by:
+            referral = await db.execute(
+                select(Referral).where(Referral.referred_user_id == user.id, Referral.is_rewarded == False)
+            )
+            referral = referral.scalar_one_or_none()
+            if referral:
+                await add_free_pro_days(db, user, 3)
+                referral.is_rewarded = True
+                await db.commit()
+        await db.commit()
+
+async def get_funnel_users(db: AsyncSession, stage: int, days_after: int = None) -> List[User]:
+    now = datetime.now(timezone.utc)
+    query = select(User).where(User.funnel_stage == stage)
+    if days_after is not None:
+        cutoff = now - timedelta(days=days_after)
+        query = query.where(
+            (User.last_funnel_message_at is None) | (User.last_funnel_message_at <= cutoff)
+        )
+    result = await db.execute(query)
+    return result.scalars().all()
+
+async def advance_funnel_stage(db: AsyncSession, user_id: int, next_stage: int, message_sent: bool = True):
+    user = await get_user_by_id(db, user_id)
+    if user:
+        user.funnel_stage = next_stage
+        if message_sent:
+            user.last_funnel_message_at = datetime.now(timezone.utc)
+        await db.commit()
+
+async def get_users_without_first_search(db: AsyncSession) -> List[User]:
+    result = await db.execute(
+        select(User).where(
+            User.first_search_at.is_(None),
+            User.funnel_stage == 0
+        )
+    )
+    return result.scalars().all()
