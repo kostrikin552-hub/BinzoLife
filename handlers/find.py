@@ -200,14 +200,24 @@ async def perform_search(message: types.Message, state: FSMContext):
 
 # ---------- Функция отображения карточки ----------
 async def show_station_card(message: types.Message, result: dict, index: int, total: int, is_pro: bool, state: FSMContext):
-    station = result["station"]
-    price = result["price"]
-    price_time = result["price_time"]
-    availability = result["availability"]
-    availability_time = result["availability_time"]
-    distance_km = result["distance_km"]
-    rating = result["rating"]
-    explanation = result["explanation"]
+    if not result:
+        logger.error("show_station_card: result is None")
+        await message.answer("Произошла ошибка при формировании карточки. Попробуйте поискать заново.")
+        return
+
+    station = result.get("station")
+    if not station:
+        logger.error(f"show_station_card: station is None in result: {result}")
+        await message.answer("Произошла ошибка при формировании карточки. Попробуйте поискать заново.")
+        return
+
+    price = result.get("price")
+    price_time = result.get("price_time")
+    availability = result.get("availability")
+    availability_time = result.get("availability_time")
+    distance_km = result.get("distance_km")
+    rating = result.get("rating")
+    explanation = result.get("explanation")
 
     status_text = status_emoji(availability.value if availability else "GRAY")
     status_time = format_time_ago(availability_time) if availability_time else "неизвестно"
@@ -215,7 +225,7 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
 
     tank_volume = 50
     fuel_consumption = 10
-    cost_to_drive = round((distance_km / 100) * fuel_consumption * price, 2)
+    cost_to_drive = round((distance_km / 100) * fuel_consumption * price, 2) if distance_km and price else 0
 
     text = (
         f"🏆 Рейтинг: {rating}/100\n"
@@ -250,6 +260,7 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка при отправке карточки: {e}", exc_info=True)
+        await message.answer("Произошла ошибка при отправке карточки. Попробуйте позже.")
 
 # ---------- Обработчик "Показать ещё 2 варианта" ----------
 @router.callback_query(lambda c: c.data.startswith("more_"))
@@ -269,13 +280,17 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
         more_results = all_results[next_index:next_index+2]
         text = "📋 Дополнительные варианты:\n\n"
         for i, res in enumerate(more_results, start=next_index+1):
-            station = res["station"]
-            price = res["price"]
-            distance = res["distance_km"]
-            availability = res["availability"].value if res["availability"] else "GRAY"
+            station = res.get("station")
+            if not station:
+                logger.warning(f"show_more: station is None for result {res}")
+                continue
+            price = res.get("price")
+            distance = res.get("distance_km")
+            availability = res.get("availability")
+            status = availability.value if availability else "GRAY"
             text += (
                 f"{i}. {station.name}\n"
-                f"   Цена: {price:.2f} ₽, наличие: {availability}, расстояние: {distance:.1f} км\n"
+                f"   Цена: {price:.2f} ₽, наличие: {status}, расстояние: {distance:.1f} км\n"
                 f"   🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>\n\n"
             )
 
@@ -310,7 +325,7 @@ async def restart_search(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_find(callback.message, state)
 
-# ---------- Остальные обработчики ----------
+# ---------- Остальные обработчики (без изменений) ----------
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
