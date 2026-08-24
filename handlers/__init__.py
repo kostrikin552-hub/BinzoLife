@@ -8,3 +8,4 @@ from . import common
 from . import payments
 from . import review
 from . import emergency
+from . import contest  # <-- добавить
