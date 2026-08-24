@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 import aiohttp
 from bs4 import BeautifulSoup
-from sqlalchemy.exc import IntegrityError
 
 from database.session import AsyncSessionLocal
 from database.crud import (
@@ -128,72 +127,75 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
         for match in matches:
             try:
-                lat = float(match[0])
-                lon = float(match[1])
-                raw_name = match[2].strip()
-                address = match[3].strip()
-                fuel_data = match[4] if len(match) > 4 else ''
-                price_str = match[5] if len(match) > 5 else ''
+                # Каждая запись в своей транзакции, чтобы изолировать ошибки
+                async with db.begin():
+                    lat = float(match[0])
+                    lon = float(match[1])
+                    raw_name = match[2].strip()
+                    address = match[3].strip()
+                    fuel_data = match[4] if len(match) > 4 else ''
+                    price_str = match[5] if len(match) > 5 else ''
 
-                price = None
-                if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
-                    p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
-                    if p_match:
-                        price = float(p_match.group(1).replace(',', '.'))
-                if not price and price_str:
-                    try:
-                        price = float(price_str.replace(',', '.'))
-                    except:
-                        pass
-                if not price:
-                    continue
+                    price = None
+                    if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
+                        p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
+                        if p_match:
+                            price = float(p_match.group(1).replace(',', '.'))
+                    if not price and price_str:
+                        try:
+                            price = float(price_str.replace(',', '.'))
+                        except:
+                            pass
+                    if not price:
+                        continue
 
-                brand = None
-                brand_keywords = ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft']
-                for b in brand_keywords:
-                    if b.lower() in raw_name.lower():
-                        brand = b
-                        break
+                    brand = None
+                    brand_keywords = ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft']
+                    for b in brand_keywords:
+                        if b.lower() in raw_name.lower():
+                            brand = b
+                            break
 
-                clean_name = truncate_string(raw_name, 299)
-                clean_address = truncate_string(address, 299)
+                    clean_name = truncate_string(raw_name, 299)
+                    clean_address = truncate_string(address, 299)
 
-                station = None
-                norm_name = clean_name.lower()
-                norm_address = clean_address.lower() if clean_address else ''
+                    station = None
+                    norm_name = clean_name.lower()
+                    norm_address = clean_address.lower() if clean_address else ''
 
-                if norm_name in existing_names:
-                    station = existing_names[norm_name]
-                elif norm_address and norm_address in existing_addresses:
-                    station = existing_addresses[norm_address]
-                else:
-                    station = await create_station(
+                    if norm_name in existing_names:
+                        station = existing_names[norm_name]
+                    elif norm_address and norm_address in existing_addresses:
+                        station = existing_addresses[norm_address]
+                    else:
+                        station = await create_station(
+                            db,
+                            city_id=city.id,
+                            name=clean_name,
+                            address=clean_address,
+                            lat=lat,
+                            lon=lon,
+                            brand=brand
+                        )
+                        created += 1
+                        existing_names[norm_name] = station
+                        if norm_address:
+                            existing_addresses[norm_address] = station
+
+                    await save_price(
                         db,
-                        city_id=city.id,
-                        name=clean_name,
-                        address=clean_address,
-                        lat=lat,
-                        lon=lon,
-                        brand=brand
+                        station.id,
+                        FuelType.AI_95,
+                        price,
+                        SourceType.PARSER,
+                        confidence=0.7,
+                        recorded_at=datetime.now(timezone.utc)
                     )
-                    created += 1
-                    existing_names[norm_name] = station
-                    if norm_address:
-                        existing_addresses[norm_address] = station
-
-                await save_price(
-                    db,
-                    station.id,
-                    FuelType.AI_95,
-                    price,
-                    SourceType.PARSER,
-                    confidence=0.7,
-                    recorded_at=datetime.now(timezone.utc)
-                )
-                updated_prices += 1
+                    updated_prices += 1
 
             except Exception as e:
-                await db.rollback()
+                # Внутри async with db.begin() ошибка уже откатит транзакцию автоматически,
+                # и сессия останется чистой для следующей итерации.
                 logger.error(f"Ошибка при обработке записи: {e}")
                 continue
 
