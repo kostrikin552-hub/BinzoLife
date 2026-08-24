@@ -372,6 +372,7 @@ async def add_reputation(db: AsyncSession, user: User, delta: int) -> User:
     await db.refresh(user)
     return user
 
+# -------- Рефералы ----------
 async def apply_referral(db: AsyncSession, new_user_id: int, referrer_code: str) -> bool:
     referrer = await get_user_by_referral_code(db, referrer_code)
     if not referrer or referrer.id == new_user_id:
@@ -633,3 +634,78 @@ async def find_nearest_green_station(db: AsyncSession, city_id: int, lat: float,
     if haversine_distance(lat, lon, nearest.latitude, nearest.longitude) <= radius_km:
         return nearest
     return None
+
+# ========== НОВЫЕ ФУНКЦИИ ДЛЯ ПРОФИЛЯ ==========
+
+async def get_user_search_count(db: AsyncSession, user_id: int) -> int:
+    """Количество поисков (действий 'search_result')"""
+    result = await db.execute(
+        select(func.count(UserAction.id)).where(
+            UserAction.user_id == user_id,
+            UserAction.action == "search_result"
+        )
+    )
+    return result.scalar() or 0
+
+async def get_user_referrals_count(db: AsyncSession, user_id: int) -> int:
+    """Количество пользователей, приглашённых данным пользователем"""
+    result = await db.execute(
+        select(func.count(Referral.id)).where(Referral.referrer_id == user_id)
+    )
+    return result.scalar() or 0
+
+async def get_next_achievement_progress(db: AsyncSession, user_id: int):
+    """
+    Возвращает (название_достижения, текущее_значение, целевое_значение)
+    для ближайшего недостигнутого достижения.
+    """
+    achievements_def = [
+        ("Первый репорт", "reports", 1),
+        ("Пригласил друга", "referrals", 1),
+        ("Экономия 500 ₽", "saved", 500),
+        ("Репортёр 10", "reports", 10),
+        ("Репортёр 50", "reports", 50),
+        ("Репортёр 100", "reports", 100),
+    ]
+    reports = await db.execute(select(func.count(AvailabilityReport.id)).where(AvailabilityReport.user_id == user_id))
+    reports = reports.scalar() or 0
+    referrals = await get_user_referrals_count(db, user_id)
+    saved = await db.execute(select(func.sum(UserEconomy.saved)).where(UserEconomy.user_id == user_id))
+    saved = saved.scalar() or 0.0
+
+    values = {
+        "reports": reports,
+        "referrals": referrals,
+        "saved": saved,
+    }
+    achieved_types = await db.execute(
+        select(UserAchievement.achievement_type).where(UserAchievement.user_id == user_id)
+    )
+    achieved = {row[0] for row in achieved_types.all()}
+
+    for name, key, target in achievements_def:
+        ach_type = f"{key}_{target}"
+        if ach_type in achieved:
+            continue
+        current = values.get(key, 0)
+        if current < target:
+            return (name, current, target)
+    return None
+
+async def get_missed_price_drops(db: AsyncSession, city_id: int, days: int = 7) -> int:
+    """
+    Возвращает количество раз, когда цена в городе была ниже средней за последние N дней.
+    Для демонстрации возвращает случайное число от 0 до 5.
+    На проде нужно реализовать полноценную логику на основе истории цен.
+    """
+    # Заглушка — позже заменим на реальный расчёт
+    import random
+    return random.randint(0, 5)
+
+async def get_potential_saving(db: AsyncSession, user_id: int) -> float:
+    """
+    Потенциальная экономия, которую пользователь мог бы получить с PRO.
+    На основе последних поисков и разницы цен между рекомендованной и средней.
+    """
+    # Заглушка — позже заменим на реальный расчёт
+    return 0.0
