@@ -1,5 +1,6 @@
 import csv
 import io
+import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from config import settings
@@ -10,12 +11,14 @@ from database.crud import (
     get_avg_rating, set_city_slug, save_availability_report_with_consensus
 )
 from database.models import SourceType, AvailabilityStatus, FuelType
+from services.city_importer import import_city_from_url
 
 router = Router()
 
 def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
 
+# ---------- Стандартные админ-команды ----------
 @router.message(Command("add_city"))
 async def add_city_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -291,7 +294,6 @@ async def show_reviews(message: types.Message):
                 text = ""
         if text:
             await message.answer(text)
-from services.city_importer import import_city_from_url
 
 # ---------- Импорт города по URL ----------
 @router.message(Command("import_city"))
@@ -329,7 +331,6 @@ async def import_all_cities_cmd(message: types.Message):
         await message.answer("⛔ Нет прав.")
         return
 
-    # Список URL всех городов (кроме Красноярска)
     city_urls = [
         "https://fuelprice.ru/moskva",
         "https://fuelprice.ru/novosibirsk",
@@ -360,11 +361,9 @@ async def import_all_cities_cmd(message: types.Message):
         except Exception as e:
             results.append(f"❌ {url} — исключение: {e}")
 
-    # Отправляем отчёт
-    report = "📊 <b>Итоги импорта всех городов</b>\n\n" + "\n".join(results)
-    # Разбиваем на части, если сообщение длинное
+    report = "📊 Итоги импорта всех городов:\n\n" + "\n".join(results)
     if len(report) > 4000:
         for i in range(0, len(report), 4000):
-            await message.answer(report[i:i+4000], parse_mode="HTML")
+            await message.answer(report[i:i+4000])
     else:
-        await message.answer(report, parse_mode="HTML")
+        await message.answer(report)
