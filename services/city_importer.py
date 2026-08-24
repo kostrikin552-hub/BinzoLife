@@ -2,7 +2,7 @@ import logging
 import re
 import asyncio
 from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
 from sqlalchemy.exc import IntegrityError
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 # Словарь для быстрого преобразования слагов в названия
 SLUG_TO_CITY = {
     "moskva": "Москва",
-    "spb": "Санкт-Петербург",  # оставьте на случай, если захотите импортировать отдельно
+    "spb": "Санкт-Петербург",
     "novosibirsk": "Новосибирск",
     "ekaterinburg": "Екатеринбург",
     "kazan": "Казань",
@@ -34,24 +34,13 @@ SLUG_TO_CITY = {
     "volgograd": "Волгоград",
     "sankt-peterburg": "Санкт-Петербург",
     "krasnoyarsk": "Красноярск",
-    "tula": "Тула",              # <-- добавьте эту строку
+    "tula": "Тула",
 }
 
-# Альтернативные слаги для некоторых городов (если вдруг изменится URL)
-ALT_SLUGS = {
-    "sankt-peterburg": "spb",
-    "rostov-na-donu": "rostov",
-}
-
-def normalize_city_name(raw: str) -> str:
-    if not raw:
-        return ""
-    raw = re.sub(r'^Цены\s+на\s+топливо\s+в\s+', '', raw, flags=re.I)
-    raw = re.sub(r'\s+—\s+.*$', '', raw)
-    raw = re.sub(r'\s+—\s+.*', '', raw)
-    raw = re.sub(r'\s+\([^)]*\)', '', raw)
-    raw = raw.strip()
-    return raw
+BRAND_KEYWORDS = [
+    'Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ',
+    'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'Татнефть'
+]
 
 def truncate_string(value: str, max_length: int = 255) -> str:
     if not value:
@@ -94,33 +83,67 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
             if match:
                 candidate = match.group(1).strip()
                 if candidate and len(candidate) < 50:
-                    return normalize_city_name(candidate)
-    meta_tag = soup.find('meta', {'name': 'description'})
-    if meta_tag and meta_tag.get('content'):
-        content = meta_tag.get('content')
-        patterns = [
-            r'в\s+([^,]+)',
-            r'в\s+([^\.]+)',
-        ]
-        for pattern in patterns:
-            match = re.search(pattern, content)
-            if match:
-                candidate = match.group(1).strip()
-                if candidate and len(candidate) < 50:
-                    return normalize_city_name(candidate)
-    return slug.replace('-', ' ').title()
+                    return candidate.strip()
+    return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
-def parse_station_data(html: str) -> list:
-    patterns = [
-        r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]',
-        r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\'\]',
-    ]
-    for pattern in patterns:
-        compiled = re.compile(pattern)
-        found = compiled.findall(html)
-        if found:
-            return found
-    return []
+def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float]]:
+    """
+    Парсит HTML и возвращает список станций:
+    (название, адрес, цена_АИ95, lat, lon)
+    """
+    soup = BeautifulSoup(html, 'html.parser')
+    stations = []
+    current_name = None
+    current_address = None
+    current_price = None
+
+    # Ищем все блоки с ценами
+    # Структура: название сети (жирный текст), затем адрес, затем цены
+    for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
+        text = elem.get_text(strip=True)
+
+        # Проверяем, не является ли элемент названием сети
+        is_brand = any(b in text for b in BRAND_KEYWORDS)
+        if is_brand and len(text) < 100:
+            # Сохраняем предыдущую станцию, если она была
+            if current_name and current_price is not None:
+                # Ищем координаты через парсинг (если есть) — пока заглушка
+                lat, lon = 0.0, 0.0
+                stations.append((current_name, current_address or "", current_price, lat, lon))
+            current_name = text
+            current_address = None
+            current_price = None
+            continue
+
+        # Проверяем, является ли элемент адресом
+        if current_name and not current_address:
+            if 'ул' in text or 'пер' in text or 'шоссе' in text or 'просп' in text or 'пр-кт' in text:
+                current_address = text
+                continue
+
+        # Проверяем, есть ли цена АИ-95
+        if current_name:
+            match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
+            if match:
+                try:
+                    current_price = float(match.group(1).replace(',', '.'))
+                    # Нашли цену — сохраняем станцию
+                    if current_name:
+                        lat, lon = 0.0, 0.0
+                        stations.append((current_name, current_address or "", current_price, lat, lon))
+                        # Сбрасываем, чтобы не дублировать
+                        current_name = None
+                        current_address = None
+                        current_price = None
+                except ValueError:
+                    pass
+
+    # Добавляем последнюю станцию, если она осталась
+    if current_name and current_price is not None:
+        lat, lon = 0.0, 0.0
+        stations.append((current_name, current_address or "", current_price, lat, lon))
+
+    return stations
 
 async def import_city_from_url(url: str) -> Dict[str, Any]:
     logger.info(f"Начинаем импорт города из URL: {url}")
@@ -134,13 +157,12 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     if not html:
         return {"error": "Не удалось загрузить страницу после нескольких попыток"}
 
-    city_name = SLUG_TO_CITY.get(slug)
-    if not city_name:
-        city_name = extract_city_name_from_html(html, slug)
+    city_name = extract_city_name_from_html(html, slug)
 
-    matches = parse_station_data(html)
-    if not matches:
-        return {"error": "Не удалось найти данные АЗС на странице"}
+    # Парсим станции из HTML
+    station_data = parse_stations_from_html(html)
+    if not station_data:
+        return {"error": "Не удалось найти АЗС на странице"}
 
     async with AsyncSessionLocal() as db:
         # ---- Шаг 1: Создаём город и устанавливаем слаг ----
@@ -158,7 +180,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     await db.rollback()
                     existing_slug = await get_city_slug(db, city_name)
                     if not existing_slug:
-                        alt_slug = ALT_SLUGS.get(slug, f"{slug}_{city.id}")
+                        alt_slug = f"{slug}_{city.id}"
                         try:
                             await set_city_slug(db, city.id, alt_slug)
                             logger.info(f"Слаг {alt_slug} установлен для города {city_name} (альтернативный)")
@@ -174,44 +196,12 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
         created = 0
         updated_prices = 0
-        updated_stations = 0
 
-        # ---- Шаг 3: Импортируем станции с использованием savepoints ----
-        for match in matches:
+        # ---- Шаг 3: Импортируем станции ----
+        for name, address, price, lat, lon in station_data:
             try:
                 async with db.begin_nested():
-                    if len(match) >= 9:
-                        lat, lon, raw_name, address, fuel_data, price_str, *_ = match
-                    else:
-                        lat, lon, raw_name, address, fuel_data, price_str = match
-                    lat = float(lat)
-                    lon = float(lon)
-                    raw_name = raw_name.strip()
-                    address = address.strip()
-                    fuel_data = fuel_data if isinstance(fuel_data, str) else ''
-                    price_str = price_str if isinstance(price_str, str) else ''
-
-                    price = None
-                    if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
-                        p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
-                        if p_match:
-                            price = float(p_match.group(1).replace(',', '.'))
-                    if not price and price_str:
-                        try:
-                            price = float(price_str.replace(',', '.'))
-                        except:
-                            pass
-                    if not price:
-                        continue
-
-                    brand = None
-                    brand_keywords = ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft']
-                    for b in brand_keywords:
-                        if b.lower() in raw_name.lower():
-                            brand = b
-                            break
-
-                    clean_name = truncate_string(raw_name, 255)
+                    clean_name = truncate_string(name, 255)
                     clean_address = truncate_string(address, 255)
 
                     station = None
@@ -223,26 +213,15 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     elif norm_address and norm_address in existing_addresses:
                         station = existing_addresses[norm_address]
 
-                    if station:
-                        need_update = False
-                        if abs(station.latitude - lat) > 0.0001 or abs(station.longitude - lon) > 0.0001:
-                            station.latitude = lat
-                            station.longitude = lon
-                            need_update = True
-                        if station.brand != brand:
-                            station.brand = brand
-                            need_update = True
-                        if need_update:
-                            updated_stations += 1
-                    else:
+                    if not station:
                         station = await create_station(
                             db,
                             city_id=city.id,
                             name=clean_name,
                             address=clean_address,
-                            lat=lat,
-                            lon=lon,
-                            brand=brand
+                            lat=lat or 0.0,
+                            lon=lon or 0.0,
+                            brand=None
                         )
                         created += 1
                         existing_names[norm_name] = station
@@ -261,20 +240,17 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     updated_prices += 1
 
             except IntegrityError as e:
-                # Дубликат цены или другой конфликт целостности — просто логируем и пропускаем
-                logger.debug(f"IntegrityError при обработке записи (вероятно дубликат): {e}")
+                logger.debug(f"IntegrityError при обработке записи: {e}")
                 continue
             except Exception as e:
                 logger.error(f"Ошибка при обработке записи: {e}")
                 continue
 
-        # ---- Шаг 4: Фиксируем внешнюю транзакцию ----
         await db.commit()
 
         return {
             "city": city_name,
             "slug": slug,
             "stations_created": created,
-            "stations_updated": updated_stations,
             "prices_updated": updated_prices
         }
