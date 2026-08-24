@@ -105,8 +105,13 @@ async def perform_search(message: types.Message, state: FSMContext):
 
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
+        if not user:
+            await message.answer("Пожалуйста, начните с /start и выберите город.")
+            await state.clear()
+            return
+
         await set_first_search(db, user.id)
-        is_pro = await check_pro(user.telegram_id) if user else False
+        is_pro = await check_pro(user.telegram_id)
 
         stations = await db.execute(
             select(Station).where(Station.city_id == city_id, Station.is_active == True)
@@ -389,7 +394,6 @@ async def subscribe_availability(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
     try:
-        # alert_avail_{station_id}
         parts = callback.data.split("_")
         if len(parts) < 3:
             raise ValueError("Недостаточно частей в callback")
