@@ -2,7 +2,6 @@ import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.session import AsyncSessionLocal
 from database.crud import get_user, create_user, get_city_by_name
@@ -16,6 +15,7 @@ from keyboards.inline import (
 logger = logging.getLogger(__name__)
 router = Router()
 
+# ---------- Основное приветствие ----------
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
@@ -46,7 +46,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
-# ---------- Обработчик "Выбрать город из списка" ----------
+# ---------- Обработчик кнопки "Выбрать город из списка" ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
@@ -55,7 +55,7 @@ async def city_list(callback: types.CallbackQuery):
         reply_markup=popular_cities_keyboard()
     )
 
-# ---------- Обработчик выбора города из списка ----------
+# ---------- Обработчик выбора города из списка (общий для всех случаев) ----------
 @router.callback_query(lambda c: c.data.startswith("city_select_"))
 async def city_select(callback: types.CallbackQuery):
     city_name = callback.data.split("_")[2]
@@ -66,7 +66,7 @@ async def city_select(callback: types.CallbackQuery):
         if not city:
             await callback.message.edit_text(
                 f"❌ Город '{city_name}' пока не добавлен в базу.\n"
-                "Пожалуйста, выберите другой город из списка или сообщите администратору.",
+                "Пожалуйста, выберите другой город из списка.",
                 reply_markup=popular_cities_keyboard()
             )
             return
@@ -83,15 +83,4 @@ async def city_select(callback: types.CallbackQuery):
         "Теперь я буду искать заправки рядом с тобой.\n\n"
         "Нажми «Найти заправку», чтобы начать.",
         reply_markup=welcome_back_keyboard()
-    )
-
-# ---------- Обработчик кнопки "Сразу искать" (если город не выбран) ----------
-@router.callback_query(F.data == "search_now")
-async def search_now(callback: types.CallbackQuery):
-    await callback.answer()
-    await callback.message.delete()
-    await callback.message.answer(
-        "🚀 Для поиска заправки сначала выбери город.\n"
-        "Нажми /start, чтобы выбрать город.",
-        reply_markup=main_menu_keyboard()
     )
