@@ -4,11 +4,15 @@ from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-YANDEX_GEOCODER_API_KEY = "ваш_ключ"  # заменить на реальный ключ
+YANDEX_GEOCODER_API_KEY = "d120fde6-3e4d-4c93-9e89-1d0eb2113536"
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
 
 async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
-    if not YANDEX_GEOCODER_API_KEY or YANDEX_GEOCODER_API_KEY == "ваш_ключ":
+    """
+    Преобразует адрес в координаты (широта, долгота) через Yandex Geocoder.
+    Возвращает (lat, lon) или None.
+    """
+    if not YANDEX_GEOCODER_API_KEY:
         logger.warning("Yandex Geocoder API key не настроен")
         return None
 
