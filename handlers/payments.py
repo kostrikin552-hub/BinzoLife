@@ -4,13 +4,16 @@ from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, create_payment, activate_pro, get_payment_by_telegram_charge_id,
-    is_user_pro
+    is_user_pro, get_city_by_name
 )
 from services.subscription import format_pro_until
 from keyboards.reply import main_menu_keyboard
 from keyboards.inline import pro_purchase_keyboard
 import logging
 from datetime import datetime
+
+from handlers.emergency import show_result
+from utils.helpers import haversine_distance
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -25,6 +28,22 @@ PRODUCT_DESCRIPTION = (
     "📌 Следить за несколькими АЗС"
 )
 PRICE = 99
+
+async def send_invoice(message: types.Message, amount: int, payload: str, description: str):
+    prices = [LabeledPrice(label=description, amount=amount * 100)]
+    try:
+        await message.answer_invoice(
+            title=f"Оплата {amount} ₽",
+            description=description,
+            provider_token=settings.PROVIDER_TOKEN,
+            currency="RUB",
+            prices=prices,
+            start_parameter="emergency_payment",
+            payload=payload
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки инвойса: {e}")
+        await message.answer("❌ Не удалось создать платёж. Попробуйте позже.")
 
 @router.message(F.text == "💎 PRO")
 async def show_pro_info(message: types.Message):
@@ -70,10 +89,10 @@ async def process_buy_pro(callback: types.CallbackQuery):
 
 @router.pre_checkout_query()
 async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
-    if pre_checkout.invoice_payload != "pro_month_30d":
+    if pre_checkout.invoice_payload not in ["pro_month_30d", "emergency_search"]:
         await pre_checkout.answer(ok=False, error_message="Некорректный платёж.")
         return
-    if pre_checkout.total_amount != PRICE * 100:
+    if pre_checkout.total_amount not in [PRICE * 100, 5000]:
         await pre_checkout.answer(ok=False, error_message="Некорректная сумма.")
         return
     if pre_checkout.currency != "RUB":
@@ -87,11 +106,25 @@ async def successful_payment(message: types.Message):
     telegram_charge_id = payment.telegram_payment_charge_id
     provider_charge_id = payment.provider_payment_charge_id
     total_amount = payment.total_amount / 100
+    payload = payment.invoice_payload
 
-    if payment.invoice_payload != "pro_month_30d":
+    if payload == "emergency_search":
+        # Разовый экстренный поиск
+        # В реальном бою координаты нужно восстанавливать из кэша
+        # Пока просто подтверждаем оплату
+        await message.answer(
+            "✅ Оплата прошла успешно!\n\n"
+            "Теперь отправьте мне своё местоположение или напишите адрес, "
+            "чтобы я нашёл ближайшую АЗС с топливом.\n\n"
+            "Нажмите «🚨 Бензин заканчивается!» ещё раз.",
+            reply_markup=main_menu_keyboard()
+        )
+        return
+
+    if payload != "pro_month_30d":
         await message.answer("❌ Некорректный платёж.")
         return
-    if payment.total_amount != PRICE * 100:
+    if total_amount != PRICE:
         await message.answer("❌ Некорректная сумма.")
         return
     if payment.currency != "RUB":
@@ -102,7 +135,6 @@ async def successful_payment(message: types.Message):
         user = await get_user(db, message.from_user.id)
         if not user:
             user = await create_user(db, message.from_user.id, message.from_user.username)
-            from database.crud import get_city_by_name
             city = await get_city_by_name(db, "Красноярск")
             if city:
                 user.city_id = city.id
