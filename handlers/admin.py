@@ -308,11 +308,11 @@ async def import_city_cmd(message: types.Message):
         return
 
     url = parts[1]
-    await message.answer(f"🔄 Начинаю импорт города из {url}...")
+    await message.answer(f"🔄 Начинаю импорт города из {url}...", parse_mode=None)
 
     result = await import_city_from_url(url)
     if "error" in result:
-        await message.answer(f"❌ Ошибка: {result['error']}")
+        await message.answer(f"❌ Ошибка: {result['error']}", parse_mode=None)
         return
 
     text = (
@@ -322,7 +322,7 @@ async def import_city_cmd(message: types.Message):
         f"📊 Создано АЗС: {result['stations_created']}\n"
         f"🔄 Обновлено цен: {result['prices_updated']}"
     )
-    await message.answer(text)
+    await message.answer(text, parse_mode=None)
 
 # ---------- Импорт всех городов из списка ----------
 @router.message(Command("import_all_cities"))
@@ -348,7 +348,7 @@ async def import_all_cities_cmd(message: types.Message):
         "https://fuelprice.ru/sankt-peterburg",
     ]
 
-    await message.answer(f"🔄 Начинаю импорт всех {len(city_urls)} городов. Это может занять несколько минут...")
+    await message.answer(f"🔄 Начинаю импорт всех {len(city_urls)} городов. Это может занять несколько минут...", parse_mode=None)
 
     results = []
     for url in city_urls:
@@ -364,6 +364,6 @@ async def import_all_cities_cmd(message: types.Message):
     report = "📊 Итоги импорта всех городов:\n\n" + "\n".join(results)
     if len(report) > 4000:
         for i in range(0, len(report), 4000):
-            await message.answer(report[i:i+4000])
+            await message.answer(report[i:i+4000], parse_mode=None)
     else:
-        await message.answer(report)
+        await message.answer(report, parse_mode=None)
