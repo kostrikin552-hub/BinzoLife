@@ -9,8 +9,8 @@ from sqlalchemy.exc import IntegrityError
 
 from database.session import AsyncSessionLocal
 from database.crud import (
-    get_city_by_name, create_station, save_price, set_city_slug,
-    get_or_create_city, get_stations_by_city, get_city_slug, update_user
+    get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
+    get_or_create_city, get_stations_by_city, get_city_slug
 )
 from database.models import FuelType, SourceType
 
@@ -171,10 +171,11 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
             else:
                 logger.info(f"Слаг для города {city_name} уже существует: {existing_slug}")
 
+        city_id = city.id
+
     # ---- Шаг 2: Импортируем станции (каждая в своей сессии) ----
     created = 0
     updated_prices = 0
-    city_id = city.id
 
     for name, address, price in station_data:
         try:
