@@ -4,19 +4,38 @@ from datetime import datetime, timezone
 from typing import Dict, Any
 import aiohttp
 from bs4 import BeautifulSoup
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError
 
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, create_station, save_price, set_city_slug,
-    get_or_create_city, get_stations_by_city
+    get_or_create_city, get_stations_by_city, get_city_slug
 )
 from database.models import FuelType, SourceType
 
 logger = logging.getLogger(__name__)
 
+# Словарь для преобразования слагов в названия городов (если не удаётся извлечь из страницы)
+SLUG_TO_CITY = {
+    "moskva": "Москва",
+    "spb": "Санкт-Петербург",
+    "novosibirsk": "Новосибирск",
+    "ekaterinburg": "Екатеринбург",
+    "kazan": "Казань",
+    "nizhniy-novgorod": "Нижний Новгород",
+    "chelyabinsk": "Челябинск",
+    "omsk": "Омск",
+    "samara": "Самара",
+    "rostov-na-donu": "Ростов-на-Дону",
+    "ufa": "Уфа",
+    "perm": "Пермь",
+    "voronezh": "Воронеж",
+    "volgograd": "Волгоград",
+    "sankt-peterburg": "Санкт-Петербург",
+    "krasnoyarsk": "Красноярск",
+}
+
 def truncate_string(value: str, max_length: int = 299) -> str:
-    """Обрезает строку до указанной длины, оставляя запас."""
     if not value:
         return ""
     if len(value) > max_length:
@@ -24,9 +43,6 @@ def truncate_string(value: str, max_length: int = 299) -> str:
     return value
 
 async def import_city_from_url(url: str) -> Dict[str, Any]:
-    """
-    Парсит страницу fuelprice.ru, создаёт город и все АЗС с ценами.
-    """
     logger.info(f"Начинаем импорт города из URL: {url}")
 
     slug_match = re.search(r'fuelprice\.ru/([^/?]+)', url)
@@ -34,6 +50,42 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         return {"error": "Неверный URL, не удалось извлечь слаг"}
     slug = slug_match.group(1)
 
+    # 1. Определяем название города
+    city_name = SLUG_TO_CITY.get(slug)
+    if not city_name:
+        # Пробуем извлечь из title
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
+        }
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, headers=headers, timeout=30) as resp:
+                    if resp.status != 200:
+                        return {"error": f"HTTP {resp.status}"}
+                    html = await resp.text()
+            except Exception as e:
+                return {"error": f"Ошибка загрузки: {e}"}
+        soup = BeautifulSoup(html, 'lxml')
+        title_tag = soup.find('title')
+        if title_tag:
+            title_text = title_tag.text.strip()
+            match = re.search(r'в\s+([^,]+)', title_text)
+            if match:
+                city_name = match.group(1).strip()
+            else:
+                # fallback: удаляем лишние слова
+                parts = title_text.split()
+                if parts:
+                    # пробуем взять последнее слово, если оно не "цены"
+                    last = parts[-1].replace('Цены', '').strip()
+                    if last:
+                        city_name = last
+        if not city_name:
+            city_name = slug.capitalize()
+
+    # 2. Парсим страницу (повторно, если уже скачали — можно передать html)
+    # Для простоты загружаем заново, но можно использовать уже полученный html
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
@@ -49,20 +101,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
     soup = BeautifulSoup(html, 'lxml')
 
-    city_name = None
-    title_tag = soup.find('title')
-    if title_tag:
-        title_text = title_tag.text.strip()
-        match = re.search(r'в\s+([^,]+)', title_text)
-        if match:
-            city_name = match.group(1).strip()
-        else:
-            parts = title_text.split()
-            if parts:
-                city_name = parts[-1].replace('Цены', '').strip()
-    if not city_name:
-        city_name = slug.capitalize()
-
+    # Ищем данные АЗС
     station_pattern = re.compile(
         r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]'
     )
@@ -72,11 +111,30 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         return {"error": "Не удалось найти данные АЗС на странице"}
 
     async with AsyncSessionLocal() as db:
+        # Получаем или создаём город
         city = await get_or_create_city(db, city_name)
         if not city:
             return {"error": f"Не удалось создать город {city_name}"}
 
-        await set_city_slug(db, city.id, slug)
+        # Устанавливаем слаг, обрабатывая возможный дубликат
+        try:
+            await set_city_slug(db, city.id, slug)
+        except IntegrityError as e:
+            # Если слаг уже существует, проверяем, принадлежит ли он этому же городу
+            await db.rollback()
+            existing_slug = await get_city_slug(db, city_name)
+            if existing_slug and existing_slug == slug:
+                # Слаг уже установлен для этого города — ничего не делаем
+                logger.info(f"Слаг {slug} уже существует для города {city_name}")
+            else:
+                # Слаг принадлежит другому городу — сообщаем об ошибке
+                logger.error(f"Слаг {slug} уже занят другим городом. Не удалось установить слаг для {city_name}")
+                # Но продолжаем импорт (без слага парсер цен не будет работать, но станции добавим)
+                # Можно также попытаться использовать альтернативный слаг, но пока просто продолжим.
+                pass
+        except Exception as e:
+            await db.rollback()
+            logger.error(f"Ошибка при установке слага: {e}")
 
         existing_stations = await get_stations_by_city(db, city.id)
         existing_names = {s.name.lower(): s for s in existing_stations}
@@ -114,7 +172,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         brand = b
                         break
 
-                # Обрезаем слишком длинные строки
                 clean_name = truncate_string(raw_name, 299)
                 clean_address = truncate_string(address, 299)
 
@@ -152,11 +209,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 )
                 updated_prices += 1
 
-            except SQLAlchemyError as e:
-                # Откатываем транзакцию для текущей записи и продолжаем
-                await db.rollback()
-                logger.error(f"Ошибка БД при обработке записи: {e}")
-                continue
             except Exception as e:
                 await db.rollback()
                 logger.error(f"Ошибка при обработке записи: {e}")
