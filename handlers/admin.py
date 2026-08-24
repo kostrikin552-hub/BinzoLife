@@ -324,7 +324,7 @@ async def import_city_cmd(message: types.Message):
     )
     await message.answer(text, parse_mode=None)
 
-# ---------- Импорт всех городов из списка ----------
+# ---------- Импорт всех городов из списка (без Санкт-Петербурга) ----------
 @router.message(Command("import_all_cities"))
 async def import_all_cities_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -345,7 +345,7 @@ async def import_all_cities_cmd(message: types.Message):
         "https://fuelprice.ru/perm",
         "https://fuelprice.ru/voronezh",
         "https://fuelprice.ru/volgograd",
-        "https://fuelprice.ru/sankt-peterburg",
+        "https://fuelprice.ru/tula",          # <-- заменён Петербург на Тулу
     ]
 
     await message.answer(f"🔄 Начинаю импорт всех {len(city_urls)} городов. Это может занять несколько минут...", parse_mode=None)
