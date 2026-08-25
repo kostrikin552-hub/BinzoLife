@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     PORT: int = 8000
     LOG_LEVEL: str = "INFO"
+    YANDEX_GEOCODER_API_KEY: str = ""  # добавлено
 
     @property
     def admin_ids(self) -> List[int]:
