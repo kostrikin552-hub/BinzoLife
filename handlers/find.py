@@ -1,3 +1,4 @@
+import html
 import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -281,6 +282,11 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
         rating = result.get("rating", 0)
         explanation = result.get("explanation", "")
 
+        # Экранируем все динамические данные, которые могут содержать HTML-теги
+        station_name = html.escape(station.name)
+        station_address = html.escape(station.address or "")
+        explanation = html.escape(explanation)
+
         status_text = status_emoji(availability.value if availability else "GRAY")
         status_time = format_time_ago(availability_time) if availability_time else "неизвестно"
         price_time_str = format_time_ago(price_time) if price_time else "неизвестно"
@@ -291,8 +297,8 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
 
         text = (
             f"🏆 Рейтинг: {rating}/100\n"
-            f"⛽ {station.name}\n"
-            f"📍 {station.address}\n"
+            f"⛽ {station_name}\n"
+            f"📍 {station_address}\n"
             f"💰 {price:.2f} ₽ (обновлено {price_time_str})\n"
             f"{status_text} Наличие: {availability.value if availability else 'GRAY'} ({status_time})\n"
             f"📏 {distance_km:.1f} км (по прямой) | ~{round(distance_km / 40 * 60)} мин\n"
@@ -350,13 +356,15 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
             availability = res.get("availability", AvailabilityStatus.GRAY)
             status = availability.value if availability else "GRAY"
 
+            station_name = html.escape(station.name)
+
             if station.latitude and station.longitude:
                 map_link = f"<a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>"
             else:
                 map_link = "Координаты отсутствуют"
 
             text += (
-                f"{i}. {station.name}\n"
+                f"{i}. {station_name}\n"
                 f"   Цена: {price:.2f} ₽, наличие: {status}, расстояние: {distance:.1f} км\n"
                 f"   🗺 {map_link}\n\n"
             )
