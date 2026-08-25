@@ -1,4 +1,3 @@
-# handlers/payments.py (полный, исправлен – удалён temp_auto_renew, логика упрощена)
 import json
 import logging
 from aiogram import Router, types, F
@@ -7,7 +6,8 @@ from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, create_user, create_payment, activate_pro, get_payment_by_telegram_charge_id,
-    is_user_pro, get_city_by_name, update_user, grant_emergency_search
+    is_user_pro, get_city_by_name, update_user, grant_emergency_search,
+    activate_trial
 )
 from services.subscription import format_pro_until
 from keyboards.reply import main_menu_keyboard
@@ -27,12 +27,10 @@ PRODUCT_DESCRIPTION = (
     "📌 Следить за несколькими АЗС"
 )
 PRICE = 99
-STARS_PRICE = 50
-
-# Временное хранилище УДАЛЕНО – выбор сохраняется в payload
+STARS_PRICE = 150  # 99 ₽ ≈ 150 Stars
 
 async def send_invoice(message: types.Message, amount: int, payload: str, description: str, currency: str = "RUB"):
-    prices = [LabeledPrice(label=description, amount=amount * 100)]
+    prices = [LabeledPrice(label=description, amount=amount * 100 if currency == "RUB" else amount)]
     try:
         await message.answer_invoice(
             title=f"Оплата {amount} {currency}",
@@ -93,7 +91,6 @@ async def process_buy_pro(callback: types.CallbackQuery):
 async def pro_auto_renew_choice(callback: types.CallbackQuery):
     choice = callback.data.split("_")[3]  # on или off
     auto_renew = (choice == "on")
-    # Выбор сохраняется в payload, временное хранилище не используется
     await callback.answer()
     prices = [LabeledPrice(label="PRO — 30 дней", amount=PRICE * 100)]
     try:
@@ -110,6 +107,25 @@ async def pro_auto_renew_choice(callback: types.CallbackQuery):
         logger.error(f"Ошибка при создании инвойса: {e}")
         await callback.message.answer("❌ Не удалось создать платёж. Попробуйте позже.")
 
+# ---------- ОПЛАТА STARS ДЛЯ PRO ----------
+@router.callback_query(F.data == "buy_pro_stars")
+async def buy_pro_stars(callback: types.CallbackQuery):
+    await callback.answer()
+    prices = [LabeledPrice(label="PRO — 30 дней", amount=STARS_PRICE)]
+    try:
+        await callback.message.answer_invoice(
+            title="💎 PRO — 30 дней",
+            description=PRODUCT_DESCRIPTION,
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+            start_parameter="pro_stars",
+            payload="pro_month_stars"
+        )
+    except Exception as e:
+        logger.error(f"Ошибка Stars инвойса: {e}")
+        await callback.message.answer("❌ Не удалось создать платёж через Stars. Попробуйте рублёвую оплату.")
+
 @router.pre_checkout_query()
 async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
     payload = pre_checkout.invoice_payload
@@ -118,6 +134,14 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
             await pre_checkout.answer(ok=False, error_message="Некорректная сумма.")
             return
         if pre_checkout.currency != "RUB":
+            await pre_checkout.answer(ok=False, error_message="Некорректная валюта.")
+            return
+        await pre_checkout.answer(ok=True)
+    elif payload == "pro_month_stars":
+        if pre_checkout.total_amount != STARS_PRICE:
+            await pre_checkout.answer(ok=False, error_message="Некорректное количество Stars.")
+            return
+        if pre_checkout.currency != "XTR":
             await pre_checkout.answer(ok=False, error_message="Некорректная валюта.")
             return
         await pre_checkout.answer(ok=True)
@@ -130,7 +154,7 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
             return
         await pre_checkout.answer(ok=True)
     elif payload == "emergency_search_stars":
-        if pre_checkout.total_amount != STARS_PRICE:
+        if pre_checkout.total_amount != 50:
             await pre_checkout.answer(ok=False, error_message="Некорректное количество Stars.")
             return
         if pre_checkout.currency != "XTR":
@@ -145,7 +169,7 @@ async def successful_payment(message: types.Message):
     payment: SuccessfulPayment = message.successful_payment
     telegram_charge_id = payment.telegram_payment_charge_id
     provider_charge_id = payment.provider_payment_charge_id
-    total_amount = payment.total_amount / 100
+    total_amount = payment.total_amount / 100 if payment.currency == "RUB" else payment.total_amount
     payload = payment.invoice_payload
     currency = payment.currency
 
@@ -159,6 +183,42 @@ async def successful_payment(message: types.Message):
         await message.answer(
             "⭐ Оплата Stars принята! Вы можете использовать экстренный поиск.\n"
             "Нажмите «🚨 Бензин заканчивается!» и введите адрес.",
+            reply_markup=main_menu_keyboard()
+        )
+        return
+
+    if currency == "XTR" and payload == "pro_month_stars":
+        if total_amount != STARS_PRICE:
+            await message.answer("❌ Некорректное количество Stars.")
+            return
+        async with AsyncSessionLocal() as db:
+            user = await get_user(db, message.from_user.id)
+            if not user:
+                user = await create_user(db, message.from_user.id, message.from_user.username)
+                city = await get_city_by_name(db, "Красноярск")
+                if city:
+                    user.city_id = city.id
+                    await db.commit()
+            existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
+            if existing:
+                await message.answer("Этот платёж уже был обработан.")
+                return
+            await create_payment(
+                db,
+                user.id,
+                telegram_charge_id,
+                provider_charge_id,
+                total_amount,
+                currency="XTR",
+                tariff="pro_month"
+            )
+            await activate_pro(db, user, days=30)
+            await db.commit()
+        until = format_pro_until(user.pro_until)
+        await message.answer(
+            f"✅ <b>PRO активирован до {until}</b>\n"
+            "Теперь вы будете получать уведомления о выгодных ценах и появлении топлива.\n"
+            "Спасибо за поддержку!",
             reply_markup=main_menu_keyboard()
         )
         return
