@@ -1,14 +1,10 @@
-import math
 from typing import Dict, Any
 from datetime import datetime, timezone
 from database.models import Station, FuelPrice, AvailabilityReport, AvailabilityStatus
-from utils.helpers import haversine_distance
 from utils.time_utils import ensure_utc
 
 def calculate_rating(
     station: Station,
-    user_lat: float,
-    user_lon: float,
     price_record: FuelPrice,
     availability_record: AvailabilityReport,
     avg_price_30d: float,
@@ -17,7 +13,7 @@ def calculate_rating(
 ) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
 
-    # 1. Ценовая привлекательность (50%)
+    # 1. Ценовая привлекательность (60%)
     price_score = 0.0
     if avg_price_30d > 0:
         deviation = (avg_price_30d - price_record.price) / avg_price_30d
@@ -27,7 +23,7 @@ def calculate_rating(
             price_score = max(price_score, 1.0 - position)
     price_score = max(0.0, min(1.0, price_score))
 
-    # 2. Наличие и свежесть (20%)
+    # 2. Наличие и свежесть (40%)
     freshness_score = 0.0
     age = 0
     if availability_record:
@@ -41,45 +37,36 @@ def calculate_rating(
             AvailabilityStatus.RED: 0.0,
             AvailabilityStatus.GRAY: 0.3,
         }.get(availability_record.status, 0.3)
-        availability_score = (freshness_score * 0.4 + confidence_score * 0.4 + status_score * 0.2)
+        availability_score = (freshness_score * 0.5 + confidence_score * 0.3 + status_score * 0.2)
     else:
         availability_score = 0.2
 
-    # 3. Расстояние (20%)
-    dist = haversine_distance(user_lat, user_lon, station.latitude, station.longitude)
-    distance_score = max(0.0, 1.0 - dist / 5.0)
-
-    # 4. Качество данных (10%)
-    price_time = ensure_utc(price_record.recorded_at)
-    price_age = (now - price_time).total_seconds() / 3600
-    data_quality = max(0.0, 1.0 - price_age / 48.0)
-
-    total = (price_score * 0.5 + availability_score * 0.2 + distance_score * 0.2 + data_quality * 0.1) * 100
+    total = (price_score * 0.6 + availability_score * 0.4) * 100
     rating = round(min(100, total))
 
-    reasons = []
-    if price_score > 0.7:
-        reasons.append(f"цена ниже средней на {round((avg_price_30d - price_record.price) / avg_price_30d * 100, 1)}%")
-    elif price_score > 0.4:
-        reasons.append("цена близка к средней")
+    # ---- Расчёт разницы в рублях ----
+    diff = avg_price_30d - price_record.price if avg_price_30d > 0 else 0
+    if diff > 0.5:
+        price_text = f"дешевле на {diff:.2f} ₽"
+    elif diff < -0.5:
+        price_text = f"дороже на {abs(diff):.2f} ₽"
     else:
-        reasons.append("цена выше средней")
+        price_text = "цена близка к средней"
+
+    reasons = []
+    reasons.append(price_text)
 
     if availability_record and availability_record.status == AvailabilityStatus.GREEN and freshness_score > 0.7:
         reasons.append(f"наличие подтверждено {round(age)} мин назад")
     elif availability_record and availability_record.status == AvailabilityStatus.GREEN:
         reasons.append("наличие подтверждено, но данные не свежие")
     elif availability_record and availability_record.status == AvailabilityStatus.GRAY:
-        reasons.append("наличие неизвестно")
+        if age > 2:
+            reasons.append(f"наличие неизвестно (данные старше {round(age)} ч)")
+        else:
+            reasons.append("наличие неизвестно")
     elif availability_record and availability_record.status == AvailabilityStatus.RED:
         reasons.append("наличие отсутствует (подтверждено)")
-
-    if dist < 2:
-        reasons.append(f"{round(dist,1)} км от вас (очень близко)")
-    elif dist < 5:
-        reasons.append(f"{round(dist,1)} км от вас")
-    else:
-        reasons.append(f"{round(dist,1)} км от вас (далековато)")
 
     return {
         "rating": rating,
@@ -87,7 +74,7 @@ def calculate_rating(
         "price_time": price_record.recorded_at,
         "availability": availability_record.status if availability_record else AvailabilityStatus.GRAY,
         "availability_time": availability_record.recorded_at if availability_record else None,
-        "distance_km": round(dist, 1),
-        "drive_time_min": round(dist / 40 * 60),
-        "explanation": "; ".join(reasons[:3]),
+        "explanation": "; ".join(reasons),
+        "price_diff": diff,  # для использования в карточке
+        "avg_price": avg_price_30d,
     }
