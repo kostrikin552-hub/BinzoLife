@@ -112,11 +112,15 @@ class User(Base):
     referral_code = Column(String(20), unique=True, nullable=True)
     referred_by = Column(BigInteger, nullable=True)
     auto_renew = Column(Boolean, default=False)
-    # ---- НОВЫЕ ПОЛЯ ДЛЯ ВОРОНКИ ----
     first_search_at = Column(DateTime(timezone=True), nullable=True)
     funnel_stage = Column(Integer, default=0)
     last_funnel_message_at = Column(DateTime(timezone=True), nullable=True)
-    # --------------------------------
+
+    # НОВЫЕ ПОЛЯ
+    trial_used = Column(Boolean, default=False)
+    trial_started = Column(DateTime(timezone=True), nullable=True)
+    silent_hours_start = Column(Integer, nullable=True)   # часы от 0 до 23
+    silent_hours_end = Column(Integer, nullable=True)     # часы от 0 до 23
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
