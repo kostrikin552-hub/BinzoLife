@@ -282,7 +282,7 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
         rating = result.get("rating", 0)
         explanation = result.get("explanation", "")
 
-        # Экранируем все динамические данные, которые могут содержать HTML-теги
+        # --- Экранируем все динамические данные ---
         station_name = html.escape(station.name)
         station_address = html.escape(station.address or "")
         explanation = html.escape(explanation)
