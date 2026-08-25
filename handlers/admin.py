@@ -554,10 +554,10 @@ async def confirm_delete_city(callback: types.CallbackQuery):
             # 6. Удаляем станции
             await db.execute(delete(Station).where(Station.city_id == city_id))
 
-        # 7. Удаляем сам город
-        await db.delete(city)
-        # 8. Удаляем слаг, если есть
+        # 7. Удаляем слаг (если есть) до удаления города
         await db.execute(delete(CitySlug).where(CitySlug.city_id == city_id))
+        # 8. Удаляем сам город
+        await db.delete(city)
         await db.commit()
 
         await callback.message.edit_text(f"✅ Город <b>'{city_name}'</b> и все его данные успешно удалены.", parse_mode="HTML")
