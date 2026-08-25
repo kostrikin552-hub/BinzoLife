@@ -11,7 +11,7 @@ from utils.helpers import haversine_distance
 from utils.geocoder import geocode_address
 from services.subscription import check_pro
 from keyboards.reply import main_menu_keyboard
-from keyboards.inline import pro_purchase_keyboard
+from keyboards.inline import pro_purchase_keyboard, emergency_payment_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -98,7 +98,6 @@ async def check_availability_and_offer(message: types.Message, state: FSMContext
 
         is_pro = await check_pro(message.from_user.id)
 
-        # Ищем станции в радиусе 5 км
         station = await find_nearest_green_station(db, city.id, lat, lon, radius_km=5.0)
         if not station:
             if is_pro:
@@ -140,22 +139,20 @@ async def check_availability_and_offer(message: types.Message, state: FSMContext
                 f"💳 Оплатить 50 ₽ (карта)\n"
                 f"⭐ Оплатить 50 Stars\n"
                 f"🔥 Купить PRO (99 ₽/мес) — и получать экстренные поиски бесплатно всегда",
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="💳 Оплатить 50 ₽", callback_data="pay_emergency_rub")],
-                    [InlineKeyboardButton(text="⭐ Оплатить 50 Stars", callback_data="pay_emergency_stars")],
-                    [InlineKeyboardButton(text="🔥 Купить PRO", callback_data="buy_pro")]
-                ])
+                reply_markup=emergency_payment_keyboard()
             )
 
 @router.callback_query(F.data == "pay_emergency_rub")
 async def pay_emergency_rub(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
     from handlers.payments import send_invoice
-    await send_invoice(callback.message, amount=50, payload="emergency_search", description="Экстренный поиск АЗС")
+    await send_invoice(callback.message, amount=50, payload="emergency_search_rub", description="Экстренный поиск АЗС")
 
 @router.callback_query(F.data == "pay_emergency_stars")
 async def pay_emergency_stars(callback: types.CallbackQuery, state: FSMContext):
-    await callback.answer("Оплата Stars пока в разработке. Используйте рублёвую оплату.", show_alert=True)
+    await callback.answer()
+    from handlers.payments import send_invoice
+    await send_invoice(callback.message, amount=50, payload="emergency_search_stars", description="Экстренный поиск АЗС", currency="XTR")
 
 async def show_result(message: types.Message, station, lat: float, lon: float):
     async with AsyncSessionLocal() as db:
