@@ -10,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
-    get_or_create_city, get_stations_by_city, get_city_slug, update_station_address
+    get_or_create_city, get_stations_by_city, get_city_slug
 )
 from database.models import FuelType, SourceType
 
@@ -98,10 +98,8 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
         if not text:
             continue
 
-        # Проверяем, является ли элемент названием сети (с учётом ключевых слов)
         is_brand = any(b in text for b in BRAND_KEYWORDS)
         if is_brand and len(text) < 100:
-            # Сохраняем предыдущую станцию, если она была
             if current_name and current_price is not None:
                 stations.append((current_name, current_address or "", current_price))
             current_name = text
@@ -109,22 +107,18 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
             current_price = None
             continue
 
-        # Если это адрес (содержит улицу, переулок, шоссе и т.п.)
         if current_name and not current_address:
             if any(key in text for key in ['ул', 'пер', 'шоссе', 'просп', 'пр-кт', 'бульвар', 'пл', 'пр-т']):
-                # Очищаем от лишних данных, оставляем только адрес
                 clean_addr = re.sub(r'\s+', ' ', text).strip()
-                if len(clean_addr) < 200:  # Защита от мусора
+                if len(clean_addr) < 200:
                     current_address = clean_addr
                 continue
 
-        # Если есть цена АИ-95
         if current_name:
             match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
             if match:
                 try:
                     current_price = float(match.group(1).replace(',', '.'))
-                    # Сохраняем станцию с текущим адресом (если адрес не найден, оставляем пустым)
                     stations.append((current_name, current_address or "", current_price))
                     current_name = None
                     current_address = None
@@ -132,7 +126,6 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
                 except ValueError:
                     pass
 
-    # Добавляем последнюю станцию, если осталась
     if current_name and current_price is not None:
         stations.append((current_name, current_address or "", current_price))
 
@@ -155,7 +148,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     if not station_data:
         return {"error": "Не удалось найти АЗС на странице"}
 
-    # ---- Создаём город и слаг ----
     async with AsyncSessionLocal() as db:
         async with db.begin():
             city = await get_or_create_city(db, city_name)
@@ -182,7 +174,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
         city_id = city.id
 
-    # ---- Импортируем станции ----
     created = 0
     updated_prices = 0
     updated_addresses = 0
@@ -206,14 +197,12 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 norm_name = clean_name.lower()
                 norm_address = clean_address.lower() if clean_address else ''
 
-                # Ищем по имени или адресу
                 if norm_name in existing_names:
                     station = existing_names[norm_name]
                 elif norm_address and norm_address in existing_addresses:
                     station = existing_addresses[norm_address]
 
                 if not station:
-                    # Создаём новую станцию
                     station = await create_station(
                         db,
                         city_id=city.id,
@@ -228,12 +217,10 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     if norm_address:
                         existing_addresses[norm_address] = station
                 else:
-                    # Обновляем адрес, если он изменился и не пустой
                     if clean_address and station.address != clean_address:
                         station.address = clean_address
                         updated_addresses += 1
 
-                # Сохраняем цену
                 await save_price(
                     db,
                     station.id,
