@@ -14,7 +14,7 @@ from database.crud import (
     deactivate_station, activate_pro, get_station_by_name_address, get_all_reviews,
     get_avg_rating, set_city_slug, save_availability_report_with_consensus,
     get_user_stats, get_payment_stats, get_funnel_stats,
-    get_review_stats, get_referral_stats
+    get_review_stats, get_referral_stats, get_users_by_segment
 )
 from database.models import (
     SourceType, AvailabilityStatus, FuelType, Station, City, CitySlug,
@@ -538,25 +538,17 @@ async def confirm_delete_city(callback: types.CallbackQuery):
             return
         city_name = city.name
 
-        # 1. Получаем все станции города
         stations = await db.execute(select(Station.id).where(Station.city_id == city_id))
         station_ids = [row[0] for row in stations.all()]
 
         if station_ids:
-            # 2. Удаляем цены
             await db.execute(delete(FuelPrice).where(FuelPrice.station_id.in_(station_ids)))
-            # 3. Удаляем availability_reports
             await db.execute(delete(AvailabilityReport).where(AvailabilityReport.station_id.in_(station_ids)))
-            # 4. Удаляем user_actions
             await db.execute(delete(UserAction).where(UserAction.station_id.in_(station_ids)))
-            # 5. Удаляем notifications
             await db.execute(delete(Notification).where(Notification.station_id.in_(station_ids)))
-            # 6. Удаляем станции
             await db.execute(delete(Station).where(Station.city_id == city_id))
 
-        # 7. Удаляем слаг (если есть) до удаления города
         await db.execute(delete(CitySlug).where(CitySlug.city_id == city_id))
-        # 8. Удаляем сам город
         await db.delete(city)
         await db.commit()
 
@@ -638,21 +630,32 @@ async def set_station_address_cmd(message: types.Message):
         station.address = address
         await db.commit()
         await message.answer(f"✅ Адрес для станции «{station.name}» (ID {station.id}) установлен:\n{address}")
-from services.selfcheck import run_self_check
 
-@router.message(Command("selftest"))
+# ========== МАССОВАЯ РАССЫЛКА ==========
+@router.message(Command("broadcast"))
 @admin_only
-async def self_test(message: types.Message):
-    """Запуск расширенной самопроверки всех систем"""
-    await message.answer("🔄 Запускаю полную самопроверку... Это может занять до 60 секунд.")
-    try:
-        result = await run_self_check()
-        summary = result.summary()
-        # Отправляем частями, если длинное
-        if len(summary) > 4000:
-            for i in range(0, len(summary), 4000):
-                await message.answer(summary[i:i+4000], parse_mode="Markdown")
-        else:
-            await message.answer(summary, parse_mode="Markdown")
-    except Exception as e:
-        await message.answer(f"❌ Критическая ошибка при выполнении самопроверки: {e}")
+async def broadcast_cmd(message: types.Message):
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: /broadcast <сегмент> <текст>\n"
+            "Сегменты: all, inactive, no_pro, reporters\n"
+            "Пример: /broadcast no_pro Специальное предложение для вас!"
+        )
+        return
+    segment = parts[1]
+    text = parts[2]
+    async with AsyncSessionLocal() as db:
+        users = await get_users_by_segment(db, segment)
+        if not users:
+            await message.answer(f"Нет пользователей в сегменте '{segment}'.")
+            return
+        sent = 0
+        for user in users:
+            try:
+                await message.bot.send_message(user.telegram_id, text, parse_mode="HTML")
+                sent += 1
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.error(f"Ошибка отправки broadcast пользователю {user.telegram_id}: {e}")
+        await message.answer(f"✅ Рассылка отправлена {sent} пользователям из сегмента '{segment}'.")
