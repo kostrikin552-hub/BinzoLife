@@ -638,3 +638,21 @@ async def set_station_address_cmd(message: types.Message):
         station.address = address
         await db.commit()
         await message.answer(f"✅ Адрес для станции «{station.name}» (ID {station.id}) установлен:\n{address}")
+from services.selfcheck import run_self_check
+
+@router.message(Command("selftest"))
+@admin_only
+async def self_test(message: types.Message):
+    """Запуск расширенной самопроверки всех систем"""
+    await message.answer("🔄 Запускаю полную самопроверку... Это может занять до 60 секунд.")
+    try:
+        result = await run_self_check()
+        summary = result.summary()
+        # Отправляем частями, если длинное
+        if len(summary) > 4000:
+            for i in range(0, len(summary), 4000):
+                await message.answer(summary[i:i+4000], parse_mode="Markdown")
+        else:
+            await message.answer(summary, parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Критическая ошибка при выполнении самопроверки: {e}")
