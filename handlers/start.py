@@ -1,4 +1,3 @@
-import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -12,7 +11,6 @@ from keyboards.inline import (
     main_menu_keyboard
 )
 
-logger = logging.getLogger(__name__)
 router = Router()
 
 @router.message(Command("start"))
@@ -21,13 +19,11 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
-    # ---- Обработка специальных параметров ----
+    # Проверяем наличие параметров (реферальная ссылка или pro)
     if len(args) > 1:
         if args[1].startswith("ref_"):
-            # Реферальная ссылка: применяем код после создания пользователя (если новый)
             ref_code = args[1][4:]
         elif args[1] == "pro":
-            # Прямой переход на страницу PRO
             from handlers.payments import show_pro_info
             await show_pro_info(message)
             return
@@ -36,25 +32,33 @@ async def cmd_start(message: types.Message, state: FSMContext):
     else:
         ref_code = None
 
-    # ---- Основная логика приветствия ----
     async with AsyncSessionLocal() as db:
         user = await get_user(db, user_id)
         if not user:
+            # Новый пользователь
             user = await create_user(db, user_id, username)
             # Применяем реферальный код, если есть
             if ref_code:
                 await apply_referral(db, user.id, ref_code)
-            # Город по умолчанию — Красноярск (если есть)
+            # Устанавливаем город по умолчанию (Красноярск)
             city = await get_city_by_name(db, "Красноярск")
             if city:
                 user.city_id = city.id
                 await db.commit()
-        else:
-            # Если пользователь уже есть и перешёл по реферальной ссылке — попробуем применить
-            if ref_code:
-                await apply_referral(db, user.id, ref_code)
 
-        # Если город уже выбран — короткое приветствие
+            # Короткое продающее приветствие для новых пользователей
+            await message.answer(
+                "📖 **BinzoLife за 3 шага:**\n\n"
+                "1. Нажми «Найти заправку» → выбери топливо → получи АЗС с ценой, наличием и маршрутом.\n"
+                "2. В критической ситуации нажми «Бензин заканчивается!» — я найду топливо за 10 секунд.\n"
+                "3. Подключи PRO, чтобы получать уведомления о снижении цен и не упускать выгоду.\n\n"
+                "💰 Экономь до 500 ₽ за заправку. Начни сейчас → «Найти заправку».",
+                reply_markup=welcome_back_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        # Возвращающийся пользователь
         if user.city_id:
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
@@ -63,7 +67,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
             )
             return
 
-        # Город не выбран — полное приветствие с выбором города
+        # Если город не выбран
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
             "Я знаю, где прямо сейчас есть 95-й бензин, по какой цене и сколько до него ехать.\n\n"
@@ -76,7 +80,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
-# ---------- Обработчики выбора города ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
@@ -107,7 +110,7 @@ async def city_select(callback: types.CallbackQuery):
 
     await callback.message.delete()
     await callback.message.answer(
-        f"✅ Город {city.name} сохранён!\n"
+        f"✅ Город {city_name} сохранён!\n"
         "Теперь я буду искать заправки рядом с тобой.\n\n"
         "Нажми «Найти заправку», чтобы начать.",
         reply_markup=welcome_back_keyboard()
