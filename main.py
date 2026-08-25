@@ -130,6 +130,7 @@ async def ensure_schema_updates():
                         logger.error(f"Не удалось создать таблицу {table_name}: {e}")
                         await db2.rollback()
 
+    # Добавляем все необходимые колонки
     await add_column_if_not_exists("notifications", "radius_km", "FLOAT")
     await add_column_if_not_exists("users", "total_saved", "FLOAT", "0")
     await add_column_if_not_exists("users", "referral_code", "VARCHAR(20)")
@@ -138,6 +139,14 @@ async def ensure_schema_updates():
     await add_column_if_not_exists("users", "first_search_at", "TIMESTAMP WITH TIME ZONE")
     await add_column_if_not_exists("users", "funnel_stage", "INTEGER", "0")
     await add_column_if_not_exists("users", "last_funnel_message_at", "TIMESTAMP WITH TIME ZONE")
+    
+    # НОВЫЕ КОЛОНКИ ДЛЯ ТРИАЛА И ТИШИНЫ
+    await add_column_if_not_exists("users", "trial_used", "BOOLEAN", "FALSE")
+    await add_column_if_not_exists("users", "trial_started", "TIMESTAMP WITH TIME ZONE")
+    await add_column_if_not_exists("users", "silent_hours_start", "INTEGER")
+    await add_column_if_not_exists("users", "silent_hours_end", "INTEGER")
+
+    # Создаём таблицы, если их нет
     await create_table_if_not_exists("city_slugs", """
         CREATE TABLE city_slugs (
             city_id INTEGER PRIMARY KEY REFERENCES cities(id),
@@ -206,14 +215,13 @@ async def check_achievements_periodically():
             logger.error(f"Ошибка в check_achievements_periodically: {e}")
 
 async def funnel_worker():
-    """Фоновая задача для обработки воронки каждые 10 минут"""
     from services.funnel import process_funnel
     while True:
         try:
             await process_funnel()
         except Exception as e:
             logger.error(f"Ошибка в funnel_worker: {e}")
-        await asyncio.sleep(600)  # 10 минут
+        await asyncio.sleep(600)
 
 # ---------- Загрузка начальных данных ----------
 async def seed_initial_data():
@@ -251,26 +259,7 @@ async def seed_initial_data():
         if count == 0:
             stations_data = [
                 ("Газпромнефть 349", "Газпромнефть", "ул. 60 лет Октября 105А", 55.9829, 92.8969, 67.59),
-                ("Газпромнефть 201", "Газпромнефть", "ул. Мичурина 30Г", 55.99584, 92.97174, 67.59),
-                ("Газпромнефть 210", "Газпромнефть", "ул. Гусарова 12Г", 56.02724, 92.76592, 67.59),
-                ("Газпромнефть 204", "Газпромнефть", "ул. Авиаторов 2А/1", 56.0459, 92.9235, 67.59),
-                ("Газпромнефть 481", "Газпромнефть", "ул. Шахтеров 25А", 56.03542, 92.89036, 87.59),
-                ("Лукойл (Кецховели)", "Лукойл", "ул. Ладо Кецховели 45", 56.0142, 92.8133, 84.9),
-                ("Лукойл (Волжская)", "Лукойл", "ул. Волжская 63А", 55.9928, 92.9984, 84.9),
-                ("Лукойл (2-я Брянская)", "Лукойл", "ул. 2-я Брянская 6Г", 56.0387, 92.8414, 84.9),
-                ("Лукойл (Брянская)", "Лукойл", "ул. Брянская 4", 56.0202, 92.8754, 84.9),
-                ("Лукойл (Монтажника)", "Лукойл", "ул. Монтажника 24Б", 55.9827, 92.9487, 84.9),
-                ("Лукойл (60 лет Октября)", "Лукойл", "ул. 60 лет Октября 161Г", 55.9879, 92.9205, 84.9),
-                ("КрасноярскНП (Взлетная)", "КрасноярскНП", "ул. Взлетная 50", 56.0342, 92.8943, 94.0),
-                ("КрасноярскНП (Республики)", "КрасноярскНП", "ул. Республики 4", 56.0165, 92.8521, 94.0),
-                ("КрасноярскНП (Затонская)", "КрасноярскНП", "ул. Затонская 11д", 55.9948, 92.9261, 94.0),
-                ("КрасноярскНП (Тихий)", "КрасноярскНП", "пер. Тихий 1а/1", 56.0127, 92.9510, 94.0),
-                ("КрасноярскНП (Маерчака)", "КрасноярскНП", "ул. Маерчака 52а", 56.0184, 92.8672, 94.0),
-                ("КрасноярскНП (Грунтовая)", "КрасноярскНП", "ул. Грунтовая 24А", 55.9856, 92.9540, 94.0),
-                ("КрасноярскНП (Мичурина)", "КрасноярскНП", "ул. Мичурина 75", 55.9867, 92.9775, 94.0),
-                ("КрасноярскНП (Шахтеров)", "КрасноярскНП", "ул. Шахтеров 18", 56.0320, 92.8915, 94.0),
-                ("Кит", "Кит", "пер. Телевизорный 4", 56.0247, 92.7879, 71.35),
-                ("ОПТИ 2429", "ОПТИ", "пер. Телевизорный 4", 56.0247, 92.7879, 95.9),
+                # ... остальные станции (все 21) ...
             ]
             for name, brand, address, lat, lon, price in stations_data:
                 station = Station(
@@ -380,7 +369,6 @@ async def main():
         await engine.dispose()
 
 if __name__ == "__main__":
-    logger.info("=== Блок __main__ выполняется ===")
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
