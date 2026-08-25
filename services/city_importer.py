@@ -42,12 +42,42 @@ BRAND_KEYWORDS = [
     'СКОН', 'Varta'
 ]
 
+# Расширенный список ключевых слов для адреса
+ADDRESS_KEYWORDS = [
+    'ул', 'пер', 'шоссе', 'просп', 'пр-кт', 'бульвар', 'пл',
+    'пр-т', 'наб', 'набережная', 'вл', 'владение', 'д',
+    'дом', 'корп', 'строение', 'проезд', 'пр-д', 'АЗС №'
+]
+
 def truncate_string(value: str, max_length: int = 255) -> str:
     if not value:
         return ""
     if len(value) > max_length:
         return value[:max_length]
     return value
+
+def is_address(text: str) -> bool:
+    """Проверяет, содержит ли текст признаки адреса."""
+    if not text:
+        return False
+    # Проверяем на наличие ключевых слов
+    for kw in ADDRESS_KEYWORDS:
+        if kw in text.lower():
+            return True
+    # Также проверяем наличие цифр и слов "г.", "город"
+    if re.search(r'(г\.|город)\s*[а-я]', text, re.I):
+        return True
+    return False
+
+def clean_address(text: str) -> str:
+    """Очищает адрес от лишних символов и лишних данных."""
+    if not text:
+        return ""
+    # Убираем лишние пробелы
+    text = re.sub(r'\s+', ' ', text).strip()
+    # Убираем лишние запятые в конце
+    text = re.sub(r',\s*$', '', text)
+    return text
 
 async def fetch_html_with_retry(url: str, retries: int = 3, delay: float = 2.0) -> Optional[str]:
     headers = {
@@ -87,45 +117,68 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
     return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
 def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
+    """
+    Парсит страницу и возвращает список (название, адрес, цена_АИ95).
+    Улучшенная версия: ищет адрес как отдельный блок между названием и ценами.
+    """
     soup = BeautifulSoup(html, 'html.parser')
     stations = []
     current_name = None
     current_address = None
     current_price = None
+    # Флаг, что мы внутри блока станции после названия
+    in_station_block = False
 
     for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
         text = elem.get_text(strip=True)
         if not text:
             continue
 
+        # Проверяем, является ли элемент названием сети
         is_brand = any(b in text for b in BRAND_KEYWORDS)
-        if is_brand and len(text) < 100:
+        if is_brand and len(text) < 150:
+            # Если у нас уже была станция, сохраняем её
             if current_name and current_price is not None:
                 stations.append((current_name, current_address or "", current_price))
+            # Начинаем новую станцию
             current_name = text
             current_address = None
             current_price = None
+            in_station_block = True
             continue
 
-        if current_name and not current_address:
-            if any(key in text for key in ['ул', 'пер', 'шоссе', 'просп', 'пр-кт', 'бульвар', 'пл', 'пр-т']):
-                clean_addr = re.sub(r'\s+', ' ', text).strip()
-                if len(clean_addr) < 200:
-                    current_address = clean_addr
+        # Если мы внутри блока станции и у нас нет адреса
+        if in_station_block and current_name and not current_address:
+            # Проверяем, является ли этот элемент адресом
+            if is_address(text):
+                current_address = clean_address(text)
+                continue
+            # Если текст содержит "АЗС №" или "г." и не содержит цены, тоже считаем адресом
+            if re.search(r'АЗС №|г\.|город|ул\.|шоссе|проезд|вл\.', text, re.I):
+                current_address = clean_address(text)
+                continue
+            # Если текст не слишком длинный и не содержит цифр (не цена), считаем адресом
+            if len(text) < 200 and not re.search(r'\d+\.?\d*\s*₽', text):
+                # Если это не цена, возможно, это адрес, но проверим, что это не цена
+                current_address = clean_address(text)
                 continue
 
-        if current_name:
-            match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
-            if match:
-                try:
-                    current_price = float(match.group(1).replace(',', '.'))
-                    stations.append((current_name, current_address or "", current_price))
-                    current_name = None
-                    current_address = None
-                    current_price = None
-                except ValueError:
-                    pass
+        # Если есть цена АИ-95
+        match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
+        if match:
+            try:
+                current_price = float(match.group(1).replace(',', '.'))
+                # Если у нас есть название, но нет адреса, то пытаемся извлечь адрес из ранее собранных данных
+                # Но мы уже попытались выше, так что если адрес всё ещё None, оставляем пустым
+                stations.append((current_name, current_address or "", current_price))
+                current_name = None
+                current_address = None
+                current_price = None
+                in_station_block = False
+            except ValueError:
+                pass
 
+    # Добавляем последнюю станцию, если осталась
     if current_name and current_price is not None:
         stations.append((current_name, current_address or "", current_price))
 
