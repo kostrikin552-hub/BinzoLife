@@ -687,12 +687,10 @@ async def get_next_achievement_progress(db: AsyncSession, user_id: int):
     return None
 
 async def get_missed_price_drops(db: AsyncSession, city_id: int, days: int = 7) -> int:
-    # Заглушка — позже заменим на реальный расчёт
     import random
     return random.randint(0, 5)
 
 async def get_potential_saving(db: AsyncSession, user_id: int) -> float:
-    # Заглушка — позже заменим на реальный расчёт
     return 0.0
 
 # ========== АВТОПРОДЛЕНИЕ ==========
@@ -787,15 +785,12 @@ async def get_users_without_first_search(db: AsyncSession) -> List[User]:
     )
     return result.scalars().all()
 
-# ========== СТАТИСТИКА (переписана на сырые SQL для устранения greenlet_spawn) ==========
+# ========== СТАТИСТИКА (сырые SQL) ==========
 
 async def get_user_stats(db: AsyncSession) -> dict:
-    """Общая статистика по пользователям."""
-    # Всего пользователей
     total_users = await db.execute(text("SELECT COUNT(*) FROM users"))
     total_users = total_users.scalar() or 0
 
-    # Активные за 7 дней
     week_ago = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     active_users = await db.execute(
         text("SELECT COUNT(DISTINCT user_id) FROM user_actions WHERE action = 'search_result' AND recorded_at >= :week_ago"),
@@ -803,7 +798,6 @@ async def get_user_stats(db: AsyncSession) -> dict:
     )
     active_users = active_users.scalar() or 0
 
-    # Новые за сегодня
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     new_today = await db.execute(
         text("SELECT COUNT(*) FROM users WHERE created_at >= :today_start"),
@@ -811,7 +805,6 @@ async def get_user_stats(db: AsyncSession) -> dict:
     )
     new_today = new_today.scalar() or 0
 
-    # Новые за неделю
     week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
     new_week = await db.execute(
         text("SELECT COUNT(*) FROM users WHERE created_at >= :week_start"),
@@ -819,7 +812,6 @@ async def get_user_stats(db: AsyncSession) -> dict:
     )
     new_week = new_week.scalar() or 0
 
-    # Новые за месяц
     month_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     new_month = await db.execute(
         text("SELECT COUNT(*) FROM users WHERE created_at >= :month_start"),
@@ -827,13 +819,11 @@ async def get_user_stats(db: AsyncSession) -> dict:
     )
     new_month = new_month.scalar() or 0
 
-    # Пользователи с поиском
     have_searches = await db.execute(
         text("SELECT COUNT(DISTINCT user_id) FROM user_actions WHERE action = 'search_result'")
     )
     have_searches = have_searches.scalar() or 0
 
-    # Активные PRO
     now = datetime.now(timezone.utc).isoformat()
     active_pro = await db.execute(
         text("SELECT COUNT(*) FROM users WHERE is_pro = True AND pro_until >= :now"),
@@ -852,7 +842,6 @@ async def get_user_stats(db: AsyncSession) -> dict:
     }
 
 async def get_payment_stats(db: AsyncSession) -> dict:
-    """Статистика по платежам."""
     now = datetime.now(timezone.utc).isoformat()
     today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
     week_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
@@ -912,7 +901,6 @@ async def get_payment_stats(db: AsyncSession) -> dict:
     }
 
 async def get_funnel_stats(db: AsyncSession) -> dict:
-    """Распределение пользователей по стадиям воронки."""
     stages = {}
     for stage in range(6):
         count = await db.execute(
@@ -923,7 +911,6 @@ async def get_funnel_stats(db: AsyncSession) -> dict:
     return stages
 
 async def get_review_stats(db: AsyncSession) -> dict:
-    """Статистика по отзывам."""
     total_reviews = await db.execute(text("SELECT COUNT(*) FROM reviews"))
     total_reviews = total_reviews.scalar() or 0
 
@@ -936,7 +923,6 @@ async def get_review_stats(db: AsyncSession) -> dict:
     }
 
 async def get_referral_stats(db: AsyncSession) -> dict:
-    """Статистика по рефералам."""
     total_referrals = await db.execute(text("SELECT COUNT(*) FROM referrals"))
     total_referrals = total_referrals.scalar() or 0
 
