@@ -1,22 +1,20 @@
 import aiohttp
 import logging
 from typing import Optional, Tuple
+from config import settings  # добавлен импорт
 
 logger = logging.getLogger(__name__)
 
-YANDEX_GEOCODER_API_KEY = "d120fde6-3e4d-4c93-9e89-1d0eb2113536"
+# Ключ больше не хардкодится, берётся из настроек
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
 
 async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
-    """
-    Преобразует адрес в координаты (широта, долгота) через Yandex Geocoder.
-    Возвращает (lat, lon) или None.
-    """
-    if not YANDEX_GEOCODER_API_KEY:
-        logger.warning("Yandex Geocoder API key не настроен")
+    api_key = settings.YANDEX_GEOCODER_API_KEY
+    if not api_key:
+        logger.warning("Yandex Geocoder API key не настроен (переменная YANDEX_GEOCODER_API_KEY)")
         return None
 
-    url = YANDEX_GEOCODER_URL.format(YANDEX_GEOCODER_API_KEY, address.replace(" ", "+"))
+    url = YANDEX_GEOCODER_URL.format(api_key, address.replace(" ", "+"))
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
