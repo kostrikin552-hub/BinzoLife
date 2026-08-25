@@ -784,3 +784,194 @@ async def get_users_without_first_search(db: AsyncSession) -> List[User]:
         )
     )
     return result.scalars().all()
+# ========== СТАТИСТИКА ==========
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import and_
+
+async def get_user_stats(db: AsyncSession) -> dict:
+    """Общая статистика по пользователям."""
+    # Всего пользователей
+    total_users = await db.execute(select(func.count(User.id)))
+    total_users = total_users.scalar() or 0
+
+    # Активные за 7 дней (хотя бы один поиск)
+    week_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    active_users = await db.execute(
+        select(func.count(func.distinct(UserAction.user_id)))
+        .where(
+            UserAction.action == "search_result",
+            UserAction.recorded_at >= week_ago
+        )
+    )
+    active_users = active_users.scalar() or 0
+
+    # Новые пользователи за сегодня, неделю, месяц
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = now - timedelta(days=7)
+    month_start = now - timedelta(days=30)
+
+    new_today = await db.execute(
+        select(func.count(User.id)).where(User.created_at >= today_start)
+    )
+    new_today = new_today.scalar() or 0
+
+    new_week = await db.execute(
+        select(func.count(User.id)).where(User.created_at >= week_start)
+    )
+    new_week = new_week.scalar() or 0
+
+    new_month = await db.execute(
+        select(func.count(User.id)).where(User.created_at >= month_start)
+    )
+    new_month = new_month.scalar() or 0
+
+    # Пользователи, которые совершили хотя бы один поиск
+    have_searches = await db.execute(
+        select(func.count(func.distinct(UserAction.user_id)))
+        .where(UserAction.action == "search_result")
+    )
+    have_searches = have_searches.scalar() or 0
+
+    # Активные PRO-подписки
+    active_pro = await db.execute(
+        select(func.count(User.id))
+        .where(
+            User.is_pro == True,
+            User.pro_until >= now
+        )
+    )
+    active_pro = active_pro.scalar() or 0
+
+    return {
+        "total_users": total_users,
+        "active_users_7d": active_users,
+        "new_today": new_today,
+        "new_week": new_week,
+        "new_month": new_month,
+        "have_searches": have_searches,
+        "active_pro": active_pro,
+    }
+
+async def get_payment_stats(db: AsyncSession) -> dict:
+    """Статистика по платежам."""
+    now = datetime.now(timezone.utc)
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    week_start = now - timedelta(days=7)
+    month_start = now - timedelta(days=30)
+
+    # Все успешные платежи
+    total_payments = await db.execute(
+        select(func.count(Payment.id)).where(Payment.status == "succeeded")
+    )
+    total_payments = total_payments.scalar() or 0
+
+    # Общая выручка
+    total_revenue = await db.execute(
+        select(func.sum(Payment.amount)).where(Payment.status == "succeeded")
+    )
+    total_revenue = total_revenue.scalar() or 0.0
+
+    # За сегодня
+    payments_today = await db.execute(
+        select(func.count(Payment.id))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= today_start
+        )
+    )
+    payments_today = payments_today.scalar() or 0
+    revenue_today = await db.execute(
+        select(func.sum(Payment.amount))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= today_start
+        )
+    )
+    revenue_today = revenue_today.scalar() or 0.0
+
+    # За неделю
+    payments_week = await db.execute(
+        select(func.count(Payment.id))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= week_start
+        )
+    )
+    payments_week = payments_week.scalar() or 0
+    revenue_week = await db.execute(
+        select(func.sum(Payment.amount))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= week_start
+        )
+    )
+    revenue_week = revenue_week.scalar() or 0.0
+
+    # За месяц
+    payments_month = await db.execute(
+        select(func.count(Payment.id))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= month_start
+        )
+    )
+    payments_month = payments_month.scalar() or 0
+    revenue_month = await db.execute(
+        select(func.sum(Payment.amount))
+        .where(
+            Payment.status == "succeeded",
+            Payment.paid_at >= month_start
+        )
+    )
+    revenue_month = revenue_month.scalar() or 0.0
+
+    return {
+        "total_payments": total_payments,
+        "total_revenue": total_revenue,
+        "payments_today": payments_today,
+        "revenue_today": revenue_today,
+        "payments_week": payments_week,
+        "revenue_week": revenue_week,
+        "payments_month": payments_month,
+        "revenue_month": revenue_month,
+    }
+
+async def get_funnel_stats(db: AsyncSession) -> dict:
+    """Распределение пользователей по стадиям воронки."""
+    stages = {}
+    for stage in range(6):
+        count = await db.execute(
+            select(func.count(User.id)).where(User.funnel_stage == stage)
+        )
+        stages[stage] = count.scalar() or 0
+    return stages
+
+async def get_review_stats(db: AsyncSession) -> dict:
+    """Статистика по отзывам."""
+    total_reviews = await db.execute(select(func.count(Review.id)))
+    total_reviews = total_reviews.scalar() or 0
+
+    avg_rating = await db.execute(select(func.avg(Review.rating)))
+    avg_rating = avg_rating.scalar() or 0.0
+
+    return {
+        "total_reviews": total_reviews,
+        "avg_rating": round(avg_rating, 1),
+    }
+
+async def get_referral_stats(db: AsyncSession) -> dict:
+    """Статистика по рефералам."""
+    total_referrals = await db.execute(select(func.count(Referral.id)))
+    total_referrals = total_referrals.scalar() or 0
+
+    # Количество рефералов, которые получили награду
+    rewarded = await db.execute(
+        select(func.count(Referral.id)).where(Referral.is_rewarded == True)
+    )
+    rewarded = rewarded.scalar() or 0
+
+    return {
+        "total_referrals": total_referrals,
+        "rewarded": rewarded,
+    }
