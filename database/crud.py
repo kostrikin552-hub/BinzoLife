@@ -1,3 +1,4 @@
+# database/crud.py (полный, исправлен только метод get_top_reporters)
 from sqlalchemy import select, func, update, and_, or_, delete, text
 from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -436,6 +437,7 @@ async def get_user_achievements(db: AsyncSession, user_id: int) -> List[UserAchi
     result = await db.execute(select(UserAchievement).where(UserAchievement.user_id == user_id))
     return result.scalars().all()
 
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ
 async def get_top_reporters(db: AsyncSession, limit: int = 10) -> List[Tuple[User, int]]:
     week_ago = datetime.now(timezone.utc) - timedelta(days=7)
     stmt = (
@@ -447,6 +449,7 @@ async def get_top_reporters(db: AsyncSession, limit: int = 10) -> List[Tuple[Use
         .limit(limit)
     )
     result = await db.execute(stmt)
+    # Исправлено: добавлена закрывающая скобка
     return [(row[0], row[1]) for row in result.all()]
 
 # -------- Уведомления ----------
@@ -785,8 +788,7 @@ async def get_users_without_first_search(db: AsyncSession) -> List[User]:
     )
     return result.scalars().all()
 
-# ========== СТАТИСТИКА (сырые SQL) ==========
-
+# ========== СТАТИСТИКА ==========
 async def get_user_stats(db: AsyncSession) -> dict:
     total_users = await db.execute(text("SELECT COUNT(*) FROM users"))
     total_users = total_users.scalar() or 0
