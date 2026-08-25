@@ -23,7 +23,7 @@ router = Router()
 def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
 
-# ---------- Универсальный декоратор для админ-команд ----------
+# ---------- Декоратор для админ-команд ----------
 def admin_only(func):
     async def wrapper(*args, **kwargs):
         message = None
@@ -38,7 +38,8 @@ def admin_only(func):
         if not is_admin(message.from_user.id):
             await message.answer("⛔ Нет прав.")
             return
-        return await func(*args, **kwargs)
+        # Вызываем функцию только с message (остальные аргументы игнорируем)
+        return await func(message)
     return wrapper
 
 # ---------- Вспомогательные функции ----------
