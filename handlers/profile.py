@@ -8,7 +8,8 @@ from database.crud import (
     get_user, get_city_by_name, is_user_pro, get_user_achievements,
     get_referral_link, get_user_search_count, get_user_referrals_count,
     get_next_achievement_progress, get_missed_price_drops,
-    get_potential_saving
+    get_potential_saving, get_user_search_history,
+    set_silent_hours, clear_silent_hours, is_silent_hours_now
 )
 from database.models import FuelType
 from keyboards.reply import main_menu_keyboard
@@ -57,38 +58,31 @@ async def show_profile(message: types.Message):
         else:
             level_text = f"Уровень: **{level_name}** (репутация {reputation})"
 
-        # Бонус уровня
         if level_bonus > 0:
             level_text += f"\n   → Бонус уровня: +{level_bonus} дн PRO при активации"
 
-        # Достижения
         achievements = await get_user_achievements(db, user.id)
         total_achievements = len(achievements)
         next_ach = await get_next_achievement_progress(db, user.id)
 
-        # Рефералы
         referrals_count = await get_user_referrals_count(db, user.id)
         bonus_days_from_achievements = sum(a.bonus_days_granted for a in achievements)
 
-        # Поиски
         search_count = await get_user_search_count(db, user.id)
 
-        # Потенциальная экономия и пропущенные уведомления
         potential_saving = await get_potential_saving(db, user.id)
         missed_drops = await get_missed_price_drops(db, user.city_id)
-        # Средняя экономия за поиск (если есть)
         if search_count > 0 and user.total_saved:
             avg_saving = user.total_saved / search_count
         else:
             avg_saving = 0
 
-        # ---- Формируем текст ----
+        # Формируем текст
         text = f"👤 **Ваш профиль BinzoLife**\n\n"
         text += f"📍 Город: {city_name}\n"
         text += f"⛽ Топливо: {fuel_display} (бак {tank_volume} л)\n"
         text += f"🏅 {level_text}\n\n"
 
-        # ---- Финансы ----
         text += "💰 **Финансы**\n"
         if potential_saving > 0:
             text += f"▪ Потенциальная экономия с PRO: **до {potential_saving:.0f} ₽** за последние заправки\n"
@@ -102,7 +96,6 @@ async def show_profile(message: types.Message):
             text += "▪ Средняя экономия за поиск: пока нет данных\n"
         text += "\n"
 
-        # ---- Уведомления (FOMO) ----
         text += "🔔 **Уведомления**\n"
         if missed_drops > 0:
             text += f"▪ За неделю цена на ваших АЗС снижалась **{missed_drops} раз**\n"
@@ -112,15 +105,14 @@ async def show_profile(message: types.Message):
             text += "▪ У вас пока нет пропущенных уведомлений. Но с PRO вы будете первыми узнавать о снижении цен.\n"
         text += "\n"
 
-        # ---- Репутация ----
         text += f"⭐ **Репутация: {reputation}**\n"
         text += "Как заработать:\n"
         text += "• Сообщить цену → +1\n"
         text += "• Привести друга → +3 дня PRO\n"
         text += "• Написать отзыв → +2\n"
+        text += "• Поделиться АЗС → +1 (1 раз в день)\n"
         text += "\n"
 
-        # ---- Достижения ----
         text += "🏅 **Достижения**\n"
         if total_achievements > 0:
             text += f"▪ Получено: {total_achievements} наград\n"
@@ -145,28 +137,26 @@ async def show_profile(message: types.Message):
             text += "▪ Все достижения получены! Вы — легенда!\n"
         text += "\n"
 
-        # ---- Рефералы ----
         text += "👥 **Рефералы**\n"
         text += f"▪ Приглашено друзей: {referrals_count}\n"
         text += f"▪ Бонусных дней PRO получено: {bonus_days_from_achievements}\n"
-        # Реферальная ссылка в тексте
         referral_link = await get_referral_link(db, user)
         text += f"📎 Ваша ссылка: {referral_link}\n"
         text += "\n"
 
-        # ---- PRO-призыв (FOMO + CTA) ----
         if is_pro and next_payment:
             text += f"💳 Следующее списание: {next_payment}\n"
         else:
             text += "💎 **Вы теряете до 500 ₽ на каждой заправке без PRO.**\n"
             text += "Окупится с первой поездки.\n"
-            # Кнопка PRO будет в клавиатуре
 
-        # ---- Клавиатура ----
+        # Клавиатура
         kb_buttons = [
             [InlineKeyboardButton(text="🏙 Изменить город", callback_data="change_city"),
              InlineKeyboardButton(text="⛽ Изменить топливо", callback_data="change_fuel")],
             [InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="📜 История поисков", callback_data="search_history")],
+            [InlineKeyboardButton(text="🔇 Настройка тишины", callback_data="silent_settings")],
         ]
         if not is_pro:
             kb_buttons.append([InlineKeyboardButton(text="🔥 Оформить PRO за 99 ₽", callback_data="buy_pro")])
@@ -246,3 +236,73 @@ async def back_to_menu_callback(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.delete()
     await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+
+# ========== ИСТОРИЯ ПОИСКОВ ==========
+@router.callback_query(F.data == "search_history")
+async def show_search_history(callback: types.CallbackQuery):
+    await callback.answer()
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.message.answer("Сначала /start")
+            return
+        history = await get_user_search_history(db, user.id, limit=10)
+        if not history:
+            await callback.message.edit_text(
+                "📜 У вас пока нет истории поисков.\n"
+                "Начните искать заправки, и они появятся здесь.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+                ])
+            )
+            return
+        text = "📜 **История ваших поисков**\n\n"
+        for i, entry in enumerate(history, 1):
+            station_name = entry.get("station_name", "неизвестно")
+            time_str = entry["recorded_at"].strftime("%d.%m %H:%M")
+            text += f"{i}. {station_name} — {time_str}\n"
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+            ]),
+            parse_mode="Markdown"
+        )
+
+# ========== НАСТРОЙКА ТИШИНЫ ==========
+@router.callback_query(F.data == "silent_settings")
+async def silent_settings(callback: types.CallbackQuery):
+    await callback.answer()
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.message.answer("Сначала /start")
+            return
+        current_start = user.silent_hours_start
+        current_end = user.silent_hours_end
+        status = f"🔇 Текущие настройки: {current_start}:00 – {current_end}:00" if current_start is not None else "🔇 Тишина не настроена"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🕐 23:00 – 07:00", callback_data="silent_23_7")],
+            [InlineKeyboardButton(text="🕐 00:00 – 06:00", callback_data="silent_0_6")],
+            [InlineKeyboardButton(text="🕐 22:00 – 08:00", callback_data="silent_22_8")],
+            [InlineKeyboardButton(text="❌ Отключить тишину", callback_data="silent_off")],
+            [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+        ])
+        await callback.message.edit_text(
+            f"{status}\n\nВыберите интервал, когда уведомления не должны приходить:",
+            reply_markup=kb
+        )
+
+@router.callback_query(lambda c: c.data.startswith("silent_"))
+async def set_silent(callback: types.CallbackQuery):
+    await callback.answer()
+    parts = callback.data.split("_")
+    if parts[1] == "off":
+        async with AsyncSessionLocal() as db:
+            await clear_silent_hours(db, callback.from_user.id)
+        await callback.message.edit_text("✅ Тишина отключена. Уведомления будут приходить в любое время.")
+        return
+    start_hour, end_hour = map(int, parts[1].split("_"))
+    async with AsyncSessionLocal() as db:
+        await set_silent_hours(db, callback.from_user.id, start_hour, end_hour)
+    await callback.message.edit_text(f"✅ Тишина настроена: {start_hour}:00 – {end_hour}:00. Уведомления не будут приходить в этот период.")
