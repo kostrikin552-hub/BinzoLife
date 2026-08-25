@@ -56,8 +56,6 @@ def station_action_keyboard(station_id: int, price: float, availability, lat: fl
     ]
     buttons.append([InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}")])
     buttons.append([InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")])
-
-    # НОВАЯ КНОПКА ПОДЕЛИТЬСЯ
     buttons.append([InlineKeyboardButton(text="📤 Поделиться с друзьями", callback_data=f"share_{station_id}")])
 
     if is_pro:
@@ -84,15 +82,15 @@ def pro_purchase_keyboard():
         [InlineKeyboardButton(text="⭐ Оплатить 150 Stars", callback_data="buy_pro_stars")]
     ])
 
-def fuel_choice_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="⛽ АИ-95")]],
-        resize_keyboard=True
-    )
-
 def emergency_payment_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить 50 ₽", callback_data="pay_emergency_rub")],
         [InlineKeyboardButton(text="⭐ Оплатить 50 Stars", callback_data="pay_emergency_stars")],
         [InlineKeyboardButton(text="🔥 Купить PRO", callback_data="buy_pro")]
     ])
+
+def fuel_choice_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(text="⛽ АИ-95")]],
+        resize_keyboard=True
+    )
