@@ -975,3 +975,43 @@ async def get_referral_stats(db: AsyncSession) -> dict:
         "total_referrals": total_referrals,
         "rewarded": rewarded,
     }
+# ========== СТАТИСТИКА ПО ГОРОДАМ ==========
+from sqlalchemy import func, select
+from database.models import City, Station
+
+async def get_cities_stations_stats(db: AsyncSession) -> List[dict]:
+    """
+    Возвращает список словарей с информацией по каждому городу:
+    - id
+    - name
+    - active_stations (количество активных АЗС)
+    - total_stations (всего АЗС, включая неактивные)
+    - has_coords (есть ли координаты у города)
+    """
+    # Запрос с группировкой по городам
+    stmt = (
+        select(
+            City.id,
+            City.name,
+            City.latitude,
+            City.longitude,
+            func.count(Station.id).filter(Station.is_active == True).label('active_count'),
+            func.count(Station.id).label('total_count')
+        )
+        .outerjoin(Station, Station.city_id == City.id)
+        .group_by(City.id, City.name, City.latitude, City.longitude)
+        .order_by(City.name)
+    )
+    result = await db.execute(stmt)
+    rows = result.all()
+    
+    stats = []
+    for row in rows:
+        stats.append({
+            "id": row.id,
+            "name": row.name,
+            "active_stations": row.active_count or 0,
+            "total_stations": row.total_count or 0,
+            "has_coords": row.latitude is not None and row.longitude is not None,
+        })
+    return stats
