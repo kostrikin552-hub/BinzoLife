@@ -936,4 +936,94 @@ async def get_referral_stats(db: AsyncSession) -> dict:
     return {
         "total_referrals": total_referrals,
         "rewarded": rewarded,
-    }
+# ========== ПРОБНЫЙ ПЕРИОД ==========
+async def activate_trial(db: AsyncSession, user_id: int) -> bool:
+    user = await get_user_by_id(db, user_id)
+    if not user or user.trial_used or user.is_pro:
+        return False
+    user.trial_used = True
+    user.trial_started = datetime.now(timezone.utc)
+    user.is_pro = True
+    user.pro_until = datetime.now(timezone.utc) + timedelta(days=3)
+    await db.commit()
+    await db.refresh(user)
+    return True
+
+# ========== ИСТОРИЯ ПОИСКОВ ==========
+async def get_user_search_history(db: AsyncSession, user_id: int, limit: int = 10) -> List[dict]:
+    result = await db.execute(
+        select(UserAction, Station)
+        .join(Station, UserAction.station_id == Station.id, isouter=True)
+        .where(UserAction.user_id == user_id, UserAction.action == "search_result")
+        .order_by(UserAction.recorded_at.desc())
+        .limit(limit)
+    )
+    rows = result.all()
+    history = []
+    for action, station in rows:
+        history.append({
+            "station_name": station.name if station else "неизвестно",
+            "recorded_at": action.recorded_at,
+        })
+    return history
+
+# ========== СЕГМЕНТАЦИЯ ДЛЯ BROADCAST ==========
+async def get_users_by_segment(db: AsyncSession, segment: str) -> List[User]:
+    now = datetime.now(timezone.utc)
+    if segment == "all":
+        result = await db.execute(select(User))
+    elif segment == "inactive":
+        week_ago = now - timedelta(days=7)
+        result = await db.execute(
+            select(User).where(
+                ~User.actions.any(UserAction.recorded_at >= week_ago)
+            )
+        )
+    elif segment == "no_pro":
+        result = await db.execute(
+            select(User).where(
+                User.is_pro == False,
+                User.trial_used == False
+            )
+        )
+    elif segment == "reporters":
+        result = await db.execute(
+            select(User).where(User.reputation > 0)
+        )
+    else:
+        result = await db.execute(select(User).where(False))
+    return result.scalars().all()
+
+# ========== НАСТРОЙКА ТИШИНЫ ==========
+async def set_silent_hours(db: AsyncSession, user_id: int, start_hour: int, end_hour: int) -> bool:
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return False
+    if start_hour < 0 or start_hour > 23 or end_hour < 0 or end_hour > 23:
+        return False
+    user.silent_hours_start = start_hour
+    user.silent_hours_end = end_hour
+    await db.commit()
+    return True
+
+async def clear_silent_hours(db: AsyncSession, user_id: int) -> bool:
+    user = await get_user_by_id(db, user_id)
+    if not user:
+        return False
+    user.silent_hours_start = None
+    user.silent_hours_end = None
+    await db.commit()
+    return True
+
+async def is_silent_hours_now(db: AsyncSession, user_id: int) -> bool:
+    user = await get_user_by_id(db, user_id)
+    if not user or user.silent_hours_start is None or user.silent_hours_end is None:
+        return False
+    now_hour = datetime.now(timezone.utc).hour
+    start = user.silent_hours_start
+    end = user.silent_hours_end
+    if start <= end:
+        return start <= now_hour < end
+    else:  # через полночь
+        return now_hour >= start or now_hour < end
+ }
