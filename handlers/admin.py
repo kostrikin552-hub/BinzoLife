@@ -16,7 +16,10 @@ from database.crud import (
     get_user_stats, get_payment_stats, get_funnel_stats,
     get_review_stats, get_referral_stats
 )
-from database.models import SourceType, AvailabilityStatus, FuelType, Station, City, CitySlug
+from database.models import (
+    SourceType, AvailabilityStatus, FuelType, Station, City, CitySlug,
+    FuelPrice, AvailabilityReport, UserAction, Notification
+)
 from services.city_importer import import_city_from_url
 
 router = Router()
@@ -496,7 +499,7 @@ async def cities_stats_cmd(message: types.Message):
         text += f"📊 <b>Итого:</b> активных АЗС: {total_active}, всего: {total_all}"
         await message.answer(text, parse_mode="HTML")
 
-# ---------- Удаление города (с подтверждением) ----------
+# ---------- Удаление города (с каскадным удалением всех зависимостей) ----------
 @router.message(Command("delete_city"))
 @admin_only
 async def delete_city_cmd(message: types.Message):
@@ -509,7 +512,6 @@ async def delete_city_cmd(message: types.Message):
         if not city:
             await message.answer(f"❌ Город '{city_name}' не найден.")
             return
-        # Проверяем, есть ли станции
         stations_count = await db.execute(select(func.count(Station.id)).where(Station.city_id == city.id))
         stations_count = stations_count.scalar()
         text = (
@@ -535,13 +537,29 @@ async def confirm_delete_city(callback: types.CallbackQuery):
             await callback.message.edit_text("❌ Город уже удалён или не найден.")
             return
         city_name = city.name
-        # Удаляем все станции города (каскадно удалятся цены, отчёты и т.д.)
-        await db.execute(delete(Station).where(Station.city_id == city_id))
-        # Удаляем сам город
+
+        # 1. Получаем все станции города
+        stations = await db.execute(select(Station.id).where(Station.city_id == city_id))
+        station_ids = [row[0] for row in stations.all()]
+
+        if station_ids:
+            # 2. Удаляем цены
+            await db.execute(delete(FuelPrice).where(FuelPrice.station_id.in_(station_ids)))
+            # 3. Удаляем availability_reports
+            await db.execute(delete(AvailabilityReport).where(AvailabilityReport.station_id.in_(station_ids)))
+            # 4. Удаляем user_actions
+            await db.execute(delete(UserAction).where(UserAction.station_id.in_(station_ids)))
+            # 5. Удаляем notifications
+            await db.execute(delete(Notification).where(Notification.station_id.in_(station_ids)))
+            # 6. Удаляем станции
+            await db.execute(delete(Station).where(Station.city_id == city_id))
+
+        # 7. Удаляем сам город
         await db.delete(city)
-        # Удаляем слаг, если есть
+        # 8. Удаляем слаг, если есть
         await db.execute(delete(CitySlug).where(CitySlug.city_id == city_id))
         await db.commit()
+
         await callback.message.edit_text(f"✅ Город <b>'{city_name}'</b> и все его данные успешно удалены.", parse_mode="HTML")
 
 @router.callback_query(F.data == "cancel_delete_city")
@@ -568,7 +586,6 @@ async def delete_empty_cities_cmd(message: types.Message):
         names = ", ".join([c.name for c in cities])
         for city in cities:
             await db.delete(city)
-            # Удаляем слаг
             await db.execute(delete(CitySlug).where(CitySlug.city_id == city.id))
         await db.commit()
         await message.answer(f"✅ Удалены пустые города: {names}")
