@@ -3,7 +3,8 @@ from datetime import datetime, timezone, timedelta
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_all_active_notifications, get_latest_price, get_latest_availability,
-    deactivate_notification, update_notification_last_triggered
+    deactivate_notification, update_notification_last_triggered,
+    is_silent_hours_now
 )
 from database.models import AvailabilityStatus, Station
 from utils.helpers import format_time_ago, haversine_distance
@@ -21,6 +22,11 @@ async def check_notifications():
     async with AsyncSessionLocal() as db:
         notifications = await get_all_active_notifications(db)
         for notif in notifications:
+            # Проверка тишины
+            if await is_silent_hours_now(db, notif.user.id):
+                logger.info(f"Уведомление для пользователя {notif.user.id} пропущено из-за тишины")
+                continue
+
             # ---- Уведомления о снижении цены ----
             if notif.notify_on_low_price and notif.target_price:
                 if notif.last_triggered_at:
@@ -80,7 +86,6 @@ async def check_notifications():
                                 logger.info(f"Уведомление о наличии отправлено {notif.user.telegram_id}")
                             except Exception as e:
                                 logger.error(f"Ошибка отправки уведомления: {e}")
-                    # Если статус не GREEN, ничего не делаем
 
                 # ---- Уведомления по радиусу (если есть) ----
                 elif notif.radius_km is not None:
