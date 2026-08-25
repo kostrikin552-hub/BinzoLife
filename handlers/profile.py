@@ -1,6 +1,7 @@
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime, timedelta, timezone
 
 from database.session import AsyncSessionLocal
 from database.crud import (
@@ -11,7 +12,7 @@ from database.crud import (
 )
 from database.models import FuelType
 from keyboards.reply import main_menu_keyboard
-from keyboards.inline import popular_cities_keyboard
+from keyboards.inline import popular_cities_keyboard, pro_purchase_keyboard
 from services.subscription import format_pro_until, check_pro
 
 router = Router()
@@ -27,8 +28,9 @@ def get_user_level(reputation: int) -> tuple:
     for i, (threshold, name, bonus) in enumerate(LEVELS):
         if reputation < threshold:
             next_threshold = LEVELS[i][0] if i < len(LEVELS) else None
-            return name, bonus, next_threshold - reputation if next_threshold else 0
-    return LEVELS[-1][1], LEVELS[-1][2], 0
+            next_name = LEVELS[i][1] if i < len(LEVELS) else None
+            return name, bonus, next_threshold - reputation if next_threshold else 0, next_name
+    return LEVELS[-1][1], LEVELS[-1][2], 0, None
 
 @router.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
@@ -48,94 +50,129 @@ async def show_profile(message: types.Message):
         next_payment = user.pro_until.strftime("%d.%m.%Y") if user.pro_until else None
 
         reputation = user.reputation or 0
-        level_name, level_bonus, rep_to_next = get_user_level(reputation)
+        level_name, level_bonus, rep_to_next, next_level_name = get_user_level(reputation)
+        if rep_to_next > 0:
+            level_text = f"Уровень: **{level_name}** (репутация {reputation}/{reputation + rep_to_next})"
+            level_text += f"\n   До следующего уровня ({next_level_name}) осталось {rep_to_next} баллов"
+        else:
+            level_text = f"Уровень: **{level_name}** (репутация {reputation})"
 
+        # Бонус уровня
+        if level_bonus > 0:
+            level_text += f"\n   → Бонус уровня: +{level_bonus} дн PRO при активации"
+
+        # Достижения
         achievements = await get_user_achievements(db, user.id)
         total_achievements = len(achievements)
         next_ach = await get_next_achievement_progress(db, user.id)
 
-        search_count = await get_user_search_count(db, user.id)
+        # Рефералы
         referrals_count = await get_user_referrals_count(db, user.id)
         bonus_days_from_achievements = sum(a.bonus_days_granted for a in achievements)
 
-        total_saved = user.total_saved or 0.0
+        # Поиски
+        search_count = await get_user_search_count(db, user.id)
+
+        # Потенциальная экономия и пропущенные уведомления
         potential_saving = await get_potential_saving(db, user.id)
         missed_drops = await get_missed_price_drops(db, user.city_id)
+        # Средняя экономия за поиск (если есть)
+        if search_count > 0 and user.total_saved:
+            avg_saving = user.total_saved / search_count
+        else:
+            avg_saving = 0
 
-        # Формируем текст профиля
-        text = f"👤 <b>Ваш профиль BinzoLife</b>\n\n"
+        # ---- Формируем текст ----
+        text = f"👤 **Ваш профиль BinzoLife**\n\n"
         text += f"📍 Город: {city_name}\n"
         text += f"⛽ Топливо: {fuel_display} (бак {tank_volume} л)\n"
-        text += f"🏅 Уровень: <b>{level_name}</b> (репутация {reputation}"
-        if rep_to_next > 0:
-            text += f", до следующего уровня {rep_to_next} баллов)"
-        else:
-            text += ")"
-        text += "\n\n"
+        text += f"🏅 {level_text}\n\n"
 
-        text += "💰 <b>Финансы</b>\n"
-        text += f"▪ Всего сэкономлено: <b>{total_saved:.2f} ₽</b>\n"
-        if search_count > 0:
-            avg_saving = total_saved / search_count if search_count > 0 else 0
-            text += f"▪ Средняя экономия за поиск: <b>{avg_saving:.2f} ₽</b>\n"
+        # ---- Финансы ----
+        text += "💰 **Финансы**\n"
         if potential_saving > 0:
-            text += f"▪ С PRO вы бы сэкономили <b>до {potential_saving:.2f} ₽</b> за последние заправки\n"
+            text += f"▪ Потенциальная экономия с PRO: **до {potential_saving:.0f} ₽** за последние заправки\n"
         else:
-            text += "▪ С PRO вы будете получать уведомления о снижении цен\n"
-        text += "\n"
-
-        text += "🔔 <b>Уведомления</b>\n"
+            text += "▪ Потенциальная экономия с PRO: **до 500 ₽** за заправку\n"
         if missed_drops > 0:
-            text += f"▪ Вы пропустили <b>{missed_drops} снижений цен</b> на ваших АЗС за последнюю неделю\n"
-            # Убираем ссылку на PRO — просто текст
-            text += "▪ Подключите PRO, чтобы не упускать выгоду\n"
+            text += f"▪ За последнюю неделю вы могли сэкономить **{missed_drops * 50:.0f} ₽**, если бы получали уведомления о снижении цен\n"
+        if avg_saving > 0:
+            text += f"▪ Средняя экономия за поиск: {avg_saving:.0f} ₽\n"
         else:
-            text += "▪ Нет пропущенных уведомлений. Вы в курсе всех выгодных цен!\n"
+            text += "▪ Средняя экономия за поиск: пока нет данных\n"
         text += "\n"
 
-        text += f"⭐ <b>Репутация: {reputation}</b>\n"
+        # ---- Уведомления (FOMO) ----
+        text += "🔔 **Уведомления**\n"
+        if missed_drops > 0:
+            text += f"▪ За неделю цена на ваших АЗС снижалась **{missed_drops} раз**\n"
+            text += f"▪ Вы пропустили экономию до **{missed_drops * 50:.0f} ₽**. С PRO вы бы не упустили.\n"
+            text += f"👉 [Подключить PRO →](https://t.me/BinzoLife_bot?start=pro)\n"
+        else:
+            text += "▪ У вас пока нет пропущенных уведомлений. Но с PRO вы будете первыми узнавать о снижении цен.\n"
+        text += "\n"
+
+        # ---- Репутация ----
+        text += f"⭐ **Репутация: {reputation}**\n"
         text += "Как заработать:\n"
         text += "• Сообщить цену → +1\n"
         text += "• Привести друга → +3 дня PRO\n"
         text += "• Написать отзыв → +2\n"
         text += "\n"
 
-        text += "🏅 <b>Достижения</b>\n"
+        # ---- Достижения ----
+        text += "🏅 **Достижения**\n"
         if total_achievements > 0:
             text += f"▪ Получено: {total_achievements} наград\n"
-        else:
-            text += "▪ У вас пока нет достижений\n"
         if next_ach:
             ach_name, progress, target = next_ach
             bar_len = 20
             filled = int(progress / target * bar_len) if target > 0 else 0
             bar = "█" * filled + "░" * (bar_len - filled)
-            text += f"▪ Следующая награда: «{ach_name}»\n"
+            text += f"▪ Ближайшее: «{ach_name}» — "
+            if "репорт" in ach_name.lower():
+                text += "сообщите 1 цену\n"
+            elif "пригласил" in ach_name.lower():
+                text += "пригласите 1 друга\n"
+            elif "экономия" in ach_name.lower():
+                text += f"накопите экономию {target} ₽\n"
+            else:
+                text += f"прогресс {progress}/{target}\n"
             text += f"   Прогресс: {bar} {progress}/{target}\n"
+            if progress < target:
+                text += f"   Награда: +1 репутация + бейдж\n"
         else:
             text += "▪ Все достижения получены! Вы — легенда!\n"
         text += "\n"
 
-        text += "👥 <b>Рефералы</b>\n"
+        # ---- Рефералы ----
+        text += "👥 **Рефералы**\n"
         text += f"▪ Приглашено друзей: {referrals_count}\n"
         text += f"▪ Бонусных дней PRO получено: {bonus_days_from_achievements}\n"
-        # Прямая ссылка на реферальную ссылку
+        # Реферальная ссылка в тексте
         referral_link = await get_referral_link(db, user)
-        text += f"▪ Ваша ссылка: {referral_link}\n"
+        text += f"📎 Ваша ссылка: {referral_link}\n"
         text += "\n"
 
+        # ---- PRO-призыв (FOMO + CTA) ----
         if is_pro and next_payment:
             text += f"💳 Следующее списание: {next_payment}\n"
-        elif not is_pro:
-            text += "💎 Оформите PRO — и получайте экстренные поиски и уведомления без ограничений!\n"
+        else:
+            text += "💎 **Вы теряете до 500 ₽ на каждой заправке без PRO.**\n"
+            text += "Окупится с первой поездки.\n"
+            # Кнопка PRO будет в клавиатуре
 
-        # Клавиатура (без кнопки реферальной ссылки, только изменение города/топлива, статистика, назад)
-        kb = InlineKeyboardMarkup(inline_keyboard=[
+        # ---- Клавиатура ----
+        kb_buttons = [
             [InlineKeyboardButton(text="🏙 Изменить город", callback_data="change_city"),
              InlineKeyboardButton(text="⛽ Изменить топливо", callback_data="change_fuel")],
             [InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats")],
-            [InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")]
-        ])
+        ]
+        if not is_pro:
+            kb_buttons.append([InlineKeyboardButton(text="🔥 Оформить PRO за 99 ₽", callback_data="buy_pro")])
+        kb_buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
 
         await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
@@ -184,7 +221,7 @@ async def show_stats(callback: types.CallbackQuery):
         search_count = await get_user_search_count(db, user.id)
         economy_count = user.total_saved or 0
         text = (
-            f"📊 <b>Ваша статистика</b>\n\n"
+            f"📊 **Ваша статистика**\n\n"
             f"🔍 Поисков заправок: {search_count}\n"
             f"💰 Всего сэкономлено: {economy_count:.2f} ₽\n"
             f"⭐ Репутация: {user.reputation}\n"
