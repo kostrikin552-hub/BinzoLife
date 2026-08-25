@@ -46,15 +46,14 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 def sort_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 По рейтингу", callback_data="sort_rating")],
-        [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")],
-        [InlineKeyboardButton(text="📍 По близости", callback_data="sort_distance")]
+        [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")]
     ])
 
-# ОБНОВЛЁННАЯ ФУНКЦИЯ С ПАРАМЕТРАМИ index И total
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
+    # Основные кнопки: Маршрут и другие
     buttons = [
-        [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)],
+        [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)],  # первая строка
         [
             InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}"),
             InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")
