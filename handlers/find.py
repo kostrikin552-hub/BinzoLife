@@ -36,11 +36,7 @@ async def start_find(message: types.Message, state: FSMContext):
     await state.set_state(FindStates.choosing_fuel)
     await message.answer("Выберите вид топлива:", reply_markup=fuel_choice_keyboard())
 
-# Обработчик любых сообщений в состоянии выбора топлива (кроме кнопок)
-@router.message(FindStates.choosing_fuel)
-async def handle_unknown_in_choosing_fuel(message: types.Message, state: FSMContext):
-    await message.answer("Пожалуйста, воспользуйтесь кнопками ниже.", reply_markup=fuel_choice_keyboard())
-
+# ---------- Обработчики состояния выбора топлива ----------
 @router.message(FindStates.choosing_fuel, F.text == "⛽ АИ-95")
 async def choose_fuel(message: types.Message, state: FSMContext):
     async with AsyncSessionLocal() as db:
@@ -81,6 +77,16 @@ async def choose_fuel(message: types.Message, state: FSMContext):
         reply_markup=sort_choice_keyboard()
     )
 
+@router.message(FindStates.choosing_fuel, F.text == "👤 Профиль")
+async def profile_from_choosing_fuel(message: types.Message, state: FSMContext):
+    await state.clear()
+    from handlers.profile import show_profile
+    await show_profile(message)
+
+@router.message(FindStates.choosing_fuel)
+async def handle_unknown_in_choosing_fuel(message: types.Message, state: FSMContext):
+    await message.answer("Пожалуйста, воспользуйтесь кнопками ниже.", reply_markup=fuel_choice_keyboard())
+
 # ---------- Обработчики выбора сортировки ----------
 @router.callback_query(F.data == "sort_rating")
 async def sort_rating(callback: types.CallbackQuery, state: FSMContext):
@@ -119,11 +125,9 @@ async def perform_search(message: types.Message, state: FSMContext):
         async with AsyncSessionLocal() as db:
             user = await get_user(db, message.from_user.id)
             if not user:
-                # Создаём пользователя, если его нет (защита)
                 user = await create_user(db, message.from_user.id, message.from_user.username)
                 logger.info(f"Создан новый пользователь {user.telegram_id} во время поиска")
 
-            # Если у пользователя нет города, пробуем взять из состояния
             if not user.city_id and city_id:
                 city = await get_city_by_id(db, city_id)
                 if city:
@@ -134,7 +138,6 @@ async def perform_search(message: types.Message, state: FSMContext):
                     await state.clear()
                     return
 
-            # Если всё равно нет города — просим выбрать
             if not user.city_id:
                 kb = InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="👤 Перейти в профиль", callback_data="go_profile")]
@@ -146,7 +149,6 @@ async def perform_search(message: types.Message, state: FSMContext):
                 await state.clear()
                 return
 
-            # Получаем город с координатами
             city = await get_city_by_id(db, user.city_id)
             if not city or city.latitude is None or city.longitude is None:
                 await message.answer(
@@ -159,11 +161,9 @@ async def perform_search(message: types.Message, state: FSMContext):
             lat = city.latitude
             lon = city.longitude
 
-            # Запоминаем время первого поиска
             await set_first_search(db, user.id)
             is_pro = await check_pro(user.telegram_id)
 
-            # Получаем станции
             stations = await db.execute(
                 select(Station).where(Station.city_id == city.id, Station.is_active == True)
             )
@@ -175,7 +175,6 @@ async def perform_search(message: types.Message, state: FSMContext):
 
             station_ids = [s.id for s in stations]
 
-            # Получаем последние цены (свежие)
             price_subq = (
                 select(FuelPrice.station_id, FuelPrice.fuel_type, func.max(FuelPrice.recorded_at).label("max_date"))
                 .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type, FuelPrice.is_fresh == True)
@@ -192,7 +191,6 @@ async def perform_search(message: types.Message, state: FSMContext):
             price_result = await db.execute(price_stmt)
             prices = {p.station_id: p for p in price_result.scalars().all()}
 
-            # Получаем последние отчёты о наличии (свежие)
             avail_subq = (
                 select(AvailabilityReport.station_id, AvailabilityReport.fuel_type, func.max(AvailabilityReport.recorded_at).label("max_date"))
                 .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type, AvailabilityReport.is_fresh == True)
@@ -209,12 +207,10 @@ async def perform_search(message: types.Message, state: FSMContext):
             avail_result = await db.execute(avail_stmt)
             avails = {a.station_id: a for a in avail_result.scalars().all()}
 
-            # Получаем среднюю, минимальную и максимальную цену за 30 дней
             avg_price = await get_avg_price_30d(db, city.id, fuel_type) or 0
             min_price = await get_min_price_30d(db, city.id, fuel_type) or 0
             max_price = await get_max_price_30d(db, city.id, fuel_type) or 0
 
-            # Формируем результаты
             results = []
             for station in stations:
                 price_rec = prices.get(station.id)
@@ -247,7 +243,6 @@ async def perform_search(message: types.Message, state: FSMContext):
                 await state.clear()
                 return
 
-            # Сортировка
             if sort_mode == "price":
                 results.sort(key=lambda x: x["price"])
             elif sort_mode == "distance":
@@ -257,10 +252,8 @@ async def perform_search(message: types.Message, state: FSMContext):
 
             await state.update_data(all_results=results, current_index=0, is_pro=is_pro)
 
-            # Показываем лучший результат
             await show_station_card(message, results[0], 0, len(results), is_pro, state)
 
-            # Логируем действие
             await log_action(db, user.id, "search_result")
 
     except Exception as e:
@@ -280,7 +273,6 @@ async def show_station_card(message: types.Message, result: dict, index: int, to
             await message.answer("Ошибка: данные о станции отсутствуют.")
             return
 
-        # Безопасное получение значений с защитой от None
         price = result.get("price", 0.0)
         price_time = result.get("price_time")
         availability = result.get("availability", AvailabilityStatus.GRAY)
@@ -358,7 +350,6 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
             availability = res.get("availability", AvailabilityStatus.GRAY)
             status = availability.value if availability else "GRAY"
 
-            # Проверка координат перед ссылкой
             if station.latitude and station.longitude:
                 map_link = f"<a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>"
             else:
@@ -445,7 +436,6 @@ async def follow_price(callback: types.CallbackQuery):
             await callback.message.answer("АЗС не найдена.")
             return
 
-        # Проверка существующей активной подписки
         existing = await get_active_notifications_for_user(db, user.id)
         for n in existing:
             if n.station_id == station_id and n.fuel_type == FuelType.AI_95 and n.notify_on_low_price:
@@ -507,7 +497,6 @@ async def subscribe_availability(callback: types.CallbackQuery):
             await callback.answer("АЗС не найдена")
             return
 
-        # Проверка дубликата
         existing = await get_active_notifications_for_user(db, user.id)
         for n in existing:
             if n.station_id == station_id and n.fuel_type == FuelType.AI_95 and n.notify_on_availability:
