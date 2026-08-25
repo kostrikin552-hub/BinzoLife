@@ -507,7 +507,7 @@ async def clean_addresses_cmd(message: types.Message):
             "Теперь запустите /import_all_cities, чтобы обновить адреса из парсера."
         )
 
-# ---------- Статистика по городам (без зависимости от crud) ----------
+# ---------- Статистика по городам ----------
 @router.message(Command("cities_stats"))
 async def cities_stats_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -515,7 +515,6 @@ async def cities_stats_cmd(message: types.Message):
         return
 
     async with AsyncSessionLocal() as db:
-        # Прямой запрос без использования crud
         stmt = (
             select(
                 City.id,
@@ -567,3 +566,67 @@ async def cities_stats_cmd(message: types.Message):
         text += f"📊 <b>Итого:</b> активных АЗС: {total_active}, всего: {total_all}"
 
         await message.answer(text, parse_mode="HTML")
+
+# ---------- НОВЫЕ КОМАНДЫ ДЛЯ РАБОТЫ С АДРЕСАМИ ----------
+
+@router.message(Command("stations_without_address"))
+async def stations_without_address_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        stations = await db.execute(
+            select(Station).where(
+                (Station.address.is_(None)) | (Station.address == "")
+            )
+        )
+        stations = stations.scalars().all()
+        count = len(stations)
+
+        if count == 0:
+            await message.answer("✅ Все станции имеют адрес.")
+            return
+
+        text = f"🛢 Найдено {count} станций без адреса:\n\n"
+        for station in stations[:20]:
+            city_name = station.city.name if station.city else "неизвестен"
+            text += f"ID: {station.id} — {station.name} (город {city_name})\n"
+        if count > 20:
+            text += f"... и ещё {count - 20} станций."
+
+        await message.answer(text, parse_mode="HTML")
+
+@router.message(Command("set_station_address"))
+async def set_station_address_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Использование: /set_station_address <id> <адрес>\n"
+            "Пример: /set_station_address 123 ул. Ленина, 15"
+        )
+        return
+
+    try:
+        station_id = int(parts[1])
+    except ValueError:
+        await message.answer("❌ ID должен быть числом.")
+        return
+
+    address = parts[2].strip()
+    if not address:
+        await message.answer("❌ Адрес не может быть пустым.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        station = await get_station_by_id(db, station_id)
+        if not station:
+            await message.answer(f"❌ Станция с ID {station_id} не найдена.")
+            return
+        station.address = address
+        await db.commit()
+        await message.answer(f"✅ Адрес для станции «{station.name}» (ID {station.id}) установлен:\n{address}")
