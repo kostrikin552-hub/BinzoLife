@@ -5,6 +5,7 @@ import re
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
@@ -576,8 +577,11 @@ async def stations_without_address_cmd(message: types.Message):
         return
 
     async with AsyncSessionLocal() as db:
+        # Жадная загрузка города, чтобы избежать lazy loading ошибки
         stations = await db.execute(
-            select(Station).where(
+            select(Station)
+            .options(selectinload(Station.city))
+            .where(
                 (Station.address.is_(None)) | (Station.address == "")
             )
         )
