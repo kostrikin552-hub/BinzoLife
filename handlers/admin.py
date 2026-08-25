@@ -4,7 +4,8 @@ import re
 import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
-from sqlalchemy import select, func
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from sqlalchemy import select, func, delete
 from sqlalchemy.orm import selectinload
 from config import settings
 from database.session import AsyncSessionLocal
@@ -15,7 +16,7 @@ from database.crud import (
     get_user_stats, get_payment_stats, get_funnel_stats,
     get_review_stats, get_referral_stats
 )
-from database.models import SourceType, AvailabilityStatus, FuelType, Station, City
+from database.models import SourceType, AvailabilityStatus, FuelType, Station, City, CitySlug
 from services.city_importer import import_city_from_url
 
 router = Router()
@@ -38,13 +39,11 @@ def admin_only(func):
         if not is_admin(message.from_user.id):
             await message.answer("⛔ Нет прав.")
             return
-        # Вызываем функцию только с message (остальные аргументы игнорируем)
         return await func(message)
     return wrapper
 
 # ---------- Вспомогательные функции ----------
 def parse_args(message: types.Message, min_count: int, usage: str):
-    """Возвращает список частей или None с отправкой сообщения об использовании."""
     parts = message.text.split()
     if len(parts) < min_count:
         asyncio.create_task(message.answer(usage))
@@ -430,6 +429,7 @@ async def show_stats(message: types.Message):
 
     await message.answer(text, parse_mode="HTML")
 
+# ---------- Очистка адресов ----------
 @router.message(Command("clean_addresses"))
 @admin_only
 async def clean_addresses_cmd(message: types.Message):
@@ -451,6 +451,7 @@ async def clean_addresses_cmd(message: types.Message):
             "Теперь запустите /import_all_cities, чтобы обновить адреса из парсера."
         )
 
+# ---------- Статистика по городам ----------
 @router.message(Command("cities_stats"))
 @admin_only
 async def cities_stats_cmd(message: types.Message):
@@ -494,6 +495,83 @@ async def cities_stats_cmd(message: types.Message):
             )
         text += f"📊 <b>Итого:</b> активных АЗС: {total_active}, всего: {total_all}"
         await message.answer(text, parse_mode="HTML")
+
+# ---------- Удаление города (с подтверждением) ----------
+@router.message(Command("delete_city"))
+@admin_only
+async def delete_city_cmd(message: types.Message):
+    parts = parse_args(message, 2, "Использование: /delete_city <название>")
+    if not parts:
+        return
+    city_name = parts[1]
+    async with AsyncSessionLocal() as db:
+        city = await get_city_by_name(db, city_name, include_inactive=True)
+        if not city:
+            await message.answer(f"❌ Город '{city_name}' не найден.")
+            return
+        # Проверяем, есть ли станции
+        stations_count = await db.execute(select(func.count(Station.id)).where(Station.city_id == city.id))
+        stations_count = stations_count.scalar()
+        text = (
+            f"⚠️ Вы уверены, что хотите удалить город <b>'{city_name}'</b>?\n"
+            f"Будет удалено: {stations_count} АЗС, все цены, отчёты и связанные данные.\n"
+            f"Это действие необратимо!"
+        )
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_city_{city.id}"),
+                InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_delete_city")
+            ]
+        ])
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+@router.callback_query(F.data.startswith("confirm_delete_city_"))
+async def confirm_delete_city(callback: types.CallbackQuery):
+    await callback.answer()
+    city_id = int(callback.data.split("_")[3])
+    async with AsyncSessionLocal() as db:
+        city = await db.get(City, city_id)
+        if not city:
+            await callback.message.edit_text("❌ Город уже удалён или не найден.")
+            return
+        city_name = city.name
+        # Удаляем все станции города (каскадно удалятся цены, отчёты и т.д.)
+        await db.execute(delete(Station).where(Station.city_id == city_id))
+        # Удаляем сам город
+        await db.delete(city)
+        # Удаляем слаг, если есть
+        await db.execute(delete(CitySlug).where(CitySlug.city_id == city_id))
+        await db.commit()
+        await callback.message.edit_text(f"✅ Город <b>'{city_name}'</b> и все его данные успешно удалены.", parse_mode="HTML")
+
+@router.callback_query(F.data == "cancel_delete_city")
+async def cancel_delete_city(callback: types.CallbackQuery):
+    await callback.answer("Удаление отменено.")
+    await callback.message.edit_text("❌ Удаление отменено.")
+
+# ---------- Удаление пустых городов ----------
+@router.message(Command("delete_empty_cities"))
+@admin_only
+async def delete_empty_cities_cmd(message: types.Message):
+    await message.answer("🔄 Проверяю города без АЗС...")
+    async with AsyncSessionLocal() as db:
+        cities = await db.execute(
+            select(City)
+            .outerjoin(Station, Station.city_id == City.id)
+            .group_by(City.id)
+            .having(func.count(Station.id) == 0)
+        )
+        cities = cities.scalars().all()
+        if not cities:
+            await message.answer("✅ Нет пустых городов.")
+            return
+        names = ", ".join([c.name for c in cities])
+        for city in cities:
+            await db.delete(city)
+            # Удаляем слаг
+            await db.execute(delete(CitySlug).where(CitySlug.city_id == city.id))
+        await db.commit()
+        await message.answer(f"✅ Удалены пустые города: {names}")
 
 # ---------- КОМАНДЫ ДЛЯ РАБОТЫ С АДРЕСАМИ ----------
 @router.message(Command("stations_without_address"))
