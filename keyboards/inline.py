@@ -49,15 +49,16 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")]
     ])
 
-# ИСПРАВЛЕННАЯ ФУНКЦИЯ
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
     buttons = [
         [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)]
     ]
-    # Кнопки "Показать ещё" и "Сообщить цену" – всегда доступны
     buttons.append([InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}")])
     buttons.append([InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")])
+
+    # НОВАЯ КНОПКА ПОДЕЛИТЬСЯ
+    buttons.append([InlineKeyboardButton(text="📤 Поделиться с друзьями", callback_data=f"share_{station_id}")])
 
     if is_pro:
         buttons.append([InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}")])
@@ -79,7 +80,8 @@ def notification_action_keyboard(notif_id: int):
 
 def pro_purchase_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить 99 ₽", callback_data="buy_pro")]
+        [InlineKeyboardButton(text="💳 Оплатить 99 ₽", callback_data="buy_pro")],
+        [InlineKeyboardButton(text="⭐ Оплатить 150 Stars", callback_data="buy_pro_stars")]
     ])
 
 def fuel_choice_keyboard():
@@ -87,3 +89,10 @@ def fuel_choice_keyboard():
         keyboard=[[KeyboardButton(text="⛽ АИ-95")]],
         resize_keyboard=True
     )
+
+def emergency_payment_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить 50 ₽", callback_data="pay_emergency_rub")],
+        [InlineKeyboardButton(text="⭐ Оплатить 50 Stars", callback_data="pay_emergency_stars")],
+        [InlineKeyboardButton(text="🔥 Купить PRO", callback_data="buy_pro")]
+    ])
