@@ -413,3 +413,67 @@ async def set_city_coords_cmd(message: types.Message):
         city.longitude = lon
         await db.commit()
         await message.answer(f"✅ Координаты для города '{city_name}' установлены: {lat}, {lon}")
+from database.crud import (
+    # ... существующие импорты ...
+    get_user_stats, get_payment_stats, get_funnel_stats,
+    get_review_stats, get_referral_stats
+)
+
+@router.message(Command("stats"))
+async def show_stats(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        user_stats = await get_user_stats(db)
+        payment_stats = await get_payment_stats(db)
+        funnel_stats = await get_funnel_stats(db)
+        review_stats = await get_review_stats(db)
+        referral_stats = await get_referral_stats(db)
+
+    # Формируем текст
+    text = "📊 <b>Статистика BinzoLife</b>\n\n"
+
+    text += "👥 <b>Пользователи</b>\n"
+    text += f"▪ Всего: {user_stats['total_users']}\n"
+    text += f"▪ Активных за 7 дней: {user_stats['active_users_7d']}\n"
+    text += f"▪ Сделали хотя бы один поиск: {user_stats['have_searches']}\n"
+    text += f"▪ Активных PRO: {user_stats['active_pro']}\n"
+    text += f"▪ Новых сегодня: {user_stats['new_today']}\n"
+    text += f"▪ Новых за неделю: {user_stats['new_week']}\n"
+    text += f"▪ Новых за месяц: {user_stats['new_month']}\n"
+    text += "\n"
+
+    text += "💳 <b>Платежи</b>\n"
+    text += f"▪ Всего оплат: {payment_stats['total_payments']}\n"
+    text += f"▪ Общая выручка: {payment_stats['total_revenue']:.2f} ₽\n"
+    text += f"▪ Сегодня: {payment_stats['payments_today']} шт. ({payment_stats['revenue_today']:.2f} ₽)\n"
+    text += f"▪ За неделю: {payment_stats['payments_week']} шт. ({payment_stats['revenue_week']:.2f} ₽)\n"
+    text += f"▪ За месяц: {payment_stats['payments_month']} шт. ({payment_stats['revenue_month']:.2f} ₽)\n"
+    text += "\n"
+
+    text += "🔄 <b>Воронка</b>\n"
+    stage_names = {
+        0: "❌ Не начали поиск",
+        1: "👋 1 день после первого поиска",
+        2: "📊 3 дня",
+        3: "⚠️ 7 дней",
+        4: "🎁 14 дней",
+        5: "💤 Завершено"
+    }
+    for stage, count in funnel_stats.items():
+        name = stage_names.get(stage, f"Стадия {stage}")
+        text += f"▪ {name}: {count}\n"
+    text += "\n"
+
+    text += "⭐ <b>Отзывы</b>\n"
+    text += f"▪ Всего: {review_stats['total_reviews']}\n"
+    text += f"▪ Средний рейтинг: {review_stats['avg_rating']}⭐\n"
+    text += "\n"
+
+    text += "👥 <b>Рефералы</b>\n"
+    text += f"▪ Всего приглашённых: {referral_stats['total_referrals']}\n"
+    text += f"▪ Получили бонус: {referral_stats['rewarded']}\n"
+
+    await message.answer(text, parse_mode="HTML")
