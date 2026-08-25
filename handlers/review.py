@@ -71,12 +71,21 @@ async def save_review(message: types.Message, state: FSMContext, telegram_id: in
             await message.answer("Сначала выполните /start")
             await state.clear()
             return
+
+        # Создаём отзыв
         await create_review(db, user.id, rating, comment)
+
+        # --- НАЧИСЛЯЕМ РЕПУТАЦИЮ ЗА ОТЗЫВ (+2) ---
+        user.reputation += 2
+        await db.commit()
+        # -----------------------------------------
+
         avg = await get_avg_rating(db)
         await message.answer(
             f"✅ Спасибо за ваш отзыв!\n"
             f"Ваша оценка: {rating}⭐\n"
-            f"Средний рейтинг бота: {avg}⭐\n\n"
+            f"Средний рейтинг бота: {avg}⭐\n"
+            f"Ваша репутация +2 (всего {user.reputation})\n\n"
             "Ваше мнение помогает нам становиться лучше!",
             reply_markup=main_menu_keyboard()
         )
