@@ -1,6 +1,7 @@
 import csv
 import io
 import re
+import asyncio
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from sqlalchemy import select, func
@@ -22,13 +23,24 @@ router = Router()
 def is_admin(user_id: int) -> bool:
     return user_id in settings.admin_ids
 
-# ---------- Декоратор для админ-команд ----------
+# ---------- Универсальный декоратор для админ-команд ----------
 def admin_only(func):
-    async def wrapper(message: types.Message, *args, **kwargs):
+    async def wrapper(*args, **kwargs):
+        # Находим message в args или kwargs
+        message = None
+        for arg in args:
+            if isinstance(arg, types.Message):
+                message = arg
+                break
+        if not message and 'message' in kwargs:
+            message = kwargs['message']
+        if not message:
+            # Если не нашли, возможно это callback_query, но в нашем случае только Message
+            return await func(*args, **kwargs)
         if not is_admin(message.from_user.id):
             await message.answer("⛔ Нет прав.")
             return
-        return await func(message, *args, **kwargs)
+        return await func(*args, **kwargs)
     return wrapper
 
 # ---------- Вспомогательные функции ----------
