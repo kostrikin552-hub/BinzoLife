@@ -4,7 +4,7 @@ import asyncio
 import re
 from aiogram import Router, types, F
 from aiogram.filters import Command
-from sqlalchemy import select
+from sqlalchemy import select, func
 from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
@@ -14,7 +14,7 @@ from database.crud import (
     get_user_stats, get_payment_stats, get_funnel_stats,
     get_review_stats, get_referral_stats
 )
-from database.models import SourceType, AvailabilityStatus, FuelType, Station
+from database.models import SourceType, AvailabilityStatus, FuelType, Station, City
 from services.city_importer import import_city_from_url
 
 router = Router()
@@ -44,7 +44,6 @@ async def add_city_cmd(message: types.Message):
             else:
                 await message.answer(f"Город {name} уже существует.")
         else:
-            from database.models import City
             new_city = City(name=name, region=region)
             db.add(new_city)
             await db.commit()
@@ -225,7 +224,6 @@ async def handle_csv_file(message: types.Message):
                 
                 city = await get_city_by_name(db, city_name, include_inactive=True)
                 if not city:
-                    from database.models import City
                     city = City(name=city_name)
                     db.add(city)
                     await db.flush()
@@ -324,7 +322,8 @@ async def import_city_cmd(message: types.Message):
         f"🏙 Город: {result['city']}\n"
         f"🔗 Слаг: {result['slug']}\n"
         f"📊 Создано АЗС: {result['stations_created']}\n"
-        f"🔄 Обновлено цен: {result['prices_updated']}"
+        f"🔄 Обновлено цен: {result['prices_updated']}\n"
+        f"🔄 Обновлено адресов: {result.get('addresses_updated', 0)}"
     )
     await message.answer(text, parse_mode=None)
 
@@ -361,7 +360,7 @@ async def import_all_cities_cmd(message: types.Message):
             if "error" in res:
                 results.append(f"❌ {url} — ошибка: {res['error']}")
             else:
-                results.append(f"✅ {res['city']} — создано АЗС: {res['stations_created']}, цен: {res['prices_updated']}")
+                results.append(f"✅ {res['city']} — создано АЗС: {res['stations_created']}, цен: {res['prices_updated']}, адресов обновлено: {res.get('addresses_updated', 0)}")
         except Exception as e:
             results.append(f"❌ {url} — исключение: {e}")
 
@@ -487,7 +486,6 @@ async def clean_addresses_cmd(message: types.Message):
     await message.answer("🔄 Начинаю очистку адресов АЗС...")
 
     async with AsyncSessionLocal() as db:
-        # Находим все станции с адресом, содержащим HTML-теги
         stations = await db.execute(
             select(Station).where(
                 Station.address.contains("<strong>") | Station.address.contains("<br>")
@@ -500,7 +498,6 @@ async def clean_addresses_cmd(message: types.Message):
             await message.answer("✅ Испорченных адресов не найдено.")
             return
 
-        # Очищаем адреса
         for station in stations:
             station.address = ""
         await db.commit()
@@ -509,3 +506,64 @@ async def clean_addresses_cmd(message: types.Message):
             f"✅ Очищено {count} адресов АЗС.\n\n"
             "Теперь запустите /import_all_cities, чтобы обновить адреса из парсера."
         )
+
+# ---------- Статистика по городам (без зависимости от crud) ----------
+@router.message(Command("cities_stats"))
+async def cities_stats_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    async with AsyncSessionLocal() as db:
+        # Прямой запрос без использования crud
+        stmt = (
+            select(
+                City.id,
+                City.name,
+                City.latitude,
+                City.longitude,
+                func.count(Station.id).filter(Station.is_active == True).label('active_count'),
+                func.count(Station.id).label('total_count')
+            )
+            .outerjoin(Station, Station.city_id == City.id)
+            .group_by(City.id, City.name, City.latitude, City.longitude)
+            .order_by(City.name)
+        )
+        result = await db.execute(stmt)
+        rows = result.all()
+
+        if not rows:
+            await message.answer("❌ В базе нет городов.")
+            return
+
+        stats = []
+        total_active = 0
+        total_all = 0
+        for row in rows:
+            active = row.active_count or 0
+            total = row.total_count or 0
+            total_active += active
+            total_all += total
+            has_coords = row.latitude is not None and row.longitude is not None
+            stats.append({
+                "name": row.name,
+                "active": active,
+                "total": total,
+                "has_coords": has_coords
+            })
+
+        stats.sort(key=lambda x: x["active"], reverse=True)
+
+        text = "🏙 <b>Статистика АЗС по городам</b>\n\n"
+        for city in stats:
+            coords_icon = "✅" if city["has_coords"] else "❌"
+            text += (
+                f"📍 <b>{city['name']}</b>\n"
+                f"   Активных АЗС: {city['active']}\n"
+                f"   Всего АЗС: {city['total']}\n"
+                f"   Координаты: {coords_icon}\n\n"
+            )
+
+        text += f"📊 <b>Итого:</b> активных АЗС: {total_active}, всего: {total_all}"
+
+        await message.answer(text, parse_mode="HTML")
