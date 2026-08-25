@@ -1,3 +1,4 @@
+# handlers/payments.py (полный, исправлен – удалён temp_auto_renew, логика упрощена)
 import json
 import logging
 from aiogram import Router, types, F
@@ -5,7 +6,7 @@ from aiogram.types import LabeledPrice, PreCheckoutQuery, SuccessfulPayment, Inl
 from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
-    get_user, create_payment, activate_pro, get_payment_by_telegram_charge_id,
+    get_user, create_user, create_payment, activate_pro, get_payment_by_telegram_charge_id,
     is_user_pro, get_city_by_name, update_user, grant_emergency_search
 )
 from services.subscription import format_pro_until
@@ -28,8 +29,7 @@ PRODUCT_DESCRIPTION = (
 PRICE = 99
 STARS_PRICE = 50
 
-# Временное хранилище для выбора автопродления (заменить на Redis в продакшне)
-temp_auto_renew = {}
+# Временное хранилище УДАЛЕНО – выбор сохраняется в payload
 
 async def send_invoice(message: types.Message, amount: int, payload: str, description: str, currency: str = "RUB"):
     prices = [LabeledPrice(label=description, amount=amount * 100)]
@@ -93,8 +93,7 @@ async def process_buy_pro(callback: types.CallbackQuery):
 async def pro_auto_renew_choice(callback: types.CallbackQuery):
     choice = callback.data.split("_")[3]  # on или off
     auto_renew = (choice == "on")
-    temp_auto_renew[callback.from_user.id] = auto_renew
-
+    # Выбор сохраняется в payload, временное хранилище не используется
     await callback.answer()
     prices = [LabeledPrice(label="PRO — 30 дней", amount=PRICE * 100)]
     try:
@@ -150,7 +149,6 @@ async def successful_payment(message: types.Message):
     payload = payment.invoice_payload
     currency = payment.currency
 
-    # Оплата Stars (экстренный поиск)
     if currency == "XTR" and payload == "emergency_search_stars":
         async with AsyncSessionLocal() as db:
             user = await get_user(db, message.from_user.id)
@@ -165,7 +163,6 @@ async def successful_payment(message: types.Message):
         )
         return
 
-    # Рублёвые платежи
     if payload.startswith("pro_month_30d"):
         auto_renew = bool(int(payload.split("_")[3])) if len(payload.split("_")) > 3 else False
         if total_amount != PRICE:
