@@ -7,10 +7,10 @@ from sqlalchemy import select, func
 from datetime import datetime, timedelta, timezone
 from database.session import AsyncSessionLocal
 from database.crud import (
-    get_user, log_action, get_city_by_id, get_station_by_id,
+    get_user, create_user, log_action, get_city_by_id, get_station_by_id,
     get_latest_price, create_notification, save_price,
-    get_latest_fresh_price, get_avg_price_30d,
-    set_first_search
+    get_latest_fresh_price, get_avg_price_30d, get_min_price_30d, get_max_price_30d,
+    set_first_search, get_active_notifications_for_user
 )
 from database.models import FuelType, AvailabilityStatus, SourceType, Station, FuelPrice, AvailabilityReport
 from services.rating import calculate_rating
@@ -36,14 +36,19 @@ async def start_find(message: types.Message, state: FSMContext):
     await state.set_state(FindStates.choosing_fuel)
     await message.answer("Выберите вид топлива:", reply_markup=fuel_choice_keyboard())
 
+# Обработчик любых сообщений в состоянии выбора топлива (кроме кнопок)
+@router.message(FindStates.choosing_fuel)
+async def handle_unknown_in_choosing_fuel(message: types.Message, state: FSMContext):
+    await message.answer("Пожалуйста, воспользуйтесь кнопками ниже.", reply_markup=fuel_choice_keyboard())
+
 @router.message(FindStates.choosing_fuel, F.text == "⛽ АИ-95")
 async def choose_fuel(message: types.Message, state: FSMContext):
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
         if not user:
-            await message.answer("Сначала выполните /start")
-            await state.clear()
-            return
+            user = await create_user(db, message.from_user.id, message.from_user.username)
+            logger.info(f"Создан новый пользователь {user.telegram_id} в процессе выбора топлива")
+
         if not user.city_id:
             kb = InlineKeyboardMarkup(inline_keyboard=[
                 [InlineKeyboardButton(text="👤 Перейти в профиль", callback_data="go_profile")]
@@ -54,6 +59,7 @@ async def choose_fuel(message: types.Message, state: FSMContext):
             )
             await state.clear()
             return
+
         city = await get_city_by_id(db, user.city_id)
         if not city or city.latitude is None or city.longitude is None:
             await message.answer(
@@ -96,172 +102,230 @@ async def sort_distance(callback: types.CallbackQuery, state: FSMContext):
 
 # ---------- Основная функция поиска ----------
 async def perform_search(message: types.Message, state: FSMContext):
-    data = await state.get_data()
-    city_id = data.get("city_id")
-    lat = data.get("lat")
-    lon = data.get("lon")
-    fuel_type = data.get("fuel_type")
-    sort_mode = data.get("sort_mode", "rating")
+    try:
+        data = await state.get_data()
+        city_id = data.get("city_id")
+        fuel_type = data.get("fuel_type", FuelType.AI_95)
+        sort_mode = data.get("sort_mode", "rating")
 
-    async with AsyncSessionLocal() as db:
-        user = await get_user(db, message.from_user.id)
-        if not user:
-            await message.answer("Пожалуйста, начните с /start и выберите город.")
+        if not city_id:
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="👤 Перейти в профиль", callback_data="go_profile")]
+            ])
+            await message.answer("❌ Город не выбран. Пожалуйста, установите город в профиле.", reply_markup=kb)
             await state.clear()
             return
 
-        await set_first_search(db, user.id)
-        is_pro = await check_pro(user.telegram_id)
+        async with AsyncSessionLocal() as db:
+            user = await get_user(db, message.from_user.id)
+            if not user:
+                # Создаём пользователя, если его нет (защита)
+                user = await create_user(db, message.from_user.id, message.from_user.username)
+                logger.info(f"Создан новый пользователь {user.telegram_id} во время поиска")
 
-        stations = await db.execute(
-            select(Station).where(Station.city_id == city_id, Station.is_active == True)
-        )
-        stations = stations.scalars().all()
-        if not stations:
-            await message.answer("В этом городе пока нет АЗС.", reply_markup=main_menu_keyboard())
-            await state.clear()
-            return
+            # Если у пользователя нет города, пробуем взять из состояния
+            if not user.city_id and city_id:
+                city = await get_city_by_id(db, city_id)
+                if city:
+                    user.city_id = city_id
+                    await db.commit()
+                else:
+                    await message.answer("❌ Город не найден. Пожалуйста, выберите город в профиле.")
+                    await state.clear()
+                    return
 
-        station_ids = [s.id for s in stations]
+            # Если всё равно нет города — просим выбрать
+            if not user.city_id:
+                kb = InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="👤 Перейти в профиль", callback_data="go_profile")]
+                ])
+                await message.answer(
+                    "❌ Город не выбран. Пожалуйста, установите город в профиле.",
+                    reply_markup=kb
+                )
+                await state.clear()
+                return
 
-        price_subq = (
-            select(FuelPrice.station_id, FuelPrice.fuel_type, func.max(FuelPrice.recorded_at).label("max_date"))
-            .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type, FuelPrice.is_fresh == True)
-            .group_by(FuelPrice.station_id, FuelPrice.fuel_type)
-            .subquery()
-        )
-        price_stmt = (
-            select(FuelPrice)
-            .join(price_subq,
-                  (FuelPrice.station_id == price_subq.c.station_id) &
-                  (FuelPrice.fuel_type == price_subq.c.fuel_type) &
-                  (FuelPrice.recorded_at == price_subq.c.max_date))
-        )
-        price_result = await db.execute(price_stmt)
-        prices = {p.station_id: p for p in price_result.scalars().all()}
+            # Получаем город с координатами
+            city = await get_city_by_id(db, user.city_id)
+            if not city or city.latitude is None or city.longitude is None:
+                await message.answer(
+                    "❌ У выбранного города не заданы координаты. Обратитесь к администратору.",
+                    reply_markup=main_menu_keyboard()
+                )
+                await state.clear()
+                return
 
-        avail_subq = (
-            select(AvailabilityReport.station_id, AvailabilityReport.fuel_type, func.max(AvailabilityReport.recorded_at).label("max_date"))
-            .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type, AvailabilityReport.is_fresh == True)
-            .group_by(AvailabilityReport.station_id, AvailabilityReport.fuel_type)
-            .subquery()
-        )
-        avail_stmt = (
-            select(AvailabilityReport)
-            .join(avail_subq,
-                  (AvailabilityReport.station_id == avail_subq.c.station_id) &
-                  (AvailabilityReport.fuel_type == avail_subq.c.fuel_type) &
-                  (AvailabilityReport.recorded_at == avail_subq.c.max_date))
-        )
-        avail_result = await db.execute(avail_stmt)
-        avails = {a.station_id: a for a in avail_result.scalars().all()}
+            lat = city.latitude
+            lon = city.longitude
 
-        avg_price = await get_avg_price_30d(db, city_id, fuel_type) or 0
+            # Запоминаем время первого поиска
+            await set_first_search(db, user.id)
+            is_pro = await check_pro(user.telegram_id)
 
-        results = []
-        for station in stations:
-            price_rec = prices.get(station.id)
-            if not price_rec:
-                continue
-            avail_rec = avails.get(station.id)
-            rating_data = calculate_rating(
-                station=station,
-                user_lat=lat,
-                user_lon=lon,
-                price_record=price_rec,
-                availability_record=avail_rec,
-                avg_price_30d=avg_price or price_rec.price,
-                min_price_30d=0,
-                max_price_30d=0
+            # Получаем станции
+            stations = await db.execute(
+                select(Station).where(Station.city_id == city.id, Station.is_active == True)
             )
-            results.append({
-                "station": station,
-                "price": price_rec.price,
-                "price_time": price_rec.recorded_at,
-                "availability": avail_rec.status if avail_rec else AvailabilityStatus.GRAY,
-                "availability_time": avail_rec.recorded_at if avail_rec else None,
-                "distance_km": haversine_distance(lat, lon, station.latitude, station.longitude),
-                "rating": rating_data["rating"],
-                "explanation": rating_data["explanation"]
-            })
+            stations = stations.scalars().all()
+            if not stations:
+                await message.answer("В этом городе пока нет АЗС.", reply_markup=main_menu_keyboard())
+                await state.clear()
+                return
 
-        if not results:
-            await message.answer("Не найдено АЗС с актуальными ценами. Попробуйте позже.")
-            await state.clear()
-            return
+            station_ids = [s.id for s in stations]
 
-        if sort_mode == "price":
-            results.sort(key=lambda x: x["price"])
-        elif sort_mode == "distance":
-            results.sort(key=lambda x: x["distance_km"])
-        else:
-            results.sort(key=lambda x: x["rating"], reverse=True)
+            # Получаем последние цены (свежие)
+            price_subq = (
+                select(FuelPrice.station_id, FuelPrice.fuel_type, func.max(FuelPrice.recorded_at).label("max_date"))
+                .where(FuelPrice.station_id.in_(station_ids), FuelPrice.fuel_type == fuel_type, FuelPrice.is_fresh == True)
+                .group_by(FuelPrice.station_id, FuelPrice.fuel_type)
+                .subquery()
+            )
+            price_stmt = (
+                select(FuelPrice)
+                .join(price_subq,
+                      (FuelPrice.station_id == price_subq.c.station_id) &
+                      (FuelPrice.fuel_type == price_subq.c.fuel_type) &
+                      (FuelPrice.recorded_at == price_subq.c.max_date))
+            )
+            price_result = await db.execute(price_stmt)
+            prices = {p.station_id: p for p in price_result.scalars().all()}
 
-        await state.update_data(all_results=results, current_index=0, is_pro=is_pro)
+            # Получаем последние отчёты о наличии (свежие)
+            avail_subq = (
+                select(AvailabilityReport.station_id, AvailabilityReport.fuel_type, func.max(AvailabilityReport.recorded_at).label("max_date"))
+                .where(AvailabilityReport.station_id.in_(station_ids), AvailabilityReport.fuel_type == fuel_type, AvailabilityReport.is_fresh == True)
+                .group_by(AvailabilityReport.station_id, AvailabilityReport.fuel_type)
+                .subquery()
+            )
+            avail_stmt = (
+                select(AvailabilityReport)
+                .join(avail_subq,
+                      (AvailabilityReport.station_id == avail_subq.c.station_id) &
+                      (AvailabilityReport.fuel_type == avail_subq.c.fuel_type) &
+                      (AvailabilityReport.recorded_at == avail_subq.c.max_date))
+            )
+            avail_result = await db.execute(avail_stmt)
+            avails = {a.station_id: a for a in avail_result.scalars().all()}
 
-        await show_station_card(message, results[0], 0, len(results), is_pro, state)
+            # Получаем среднюю, минимальную и максимальную цену за 30 дней
+            avg_price = await get_avg_price_30d(db, city.id, fuel_type) or 0
+            min_price = await get_min_price_30d(db, city.id, fuel_type) or 0
+            max_price = await get_max_price_30d(db, city.id, fuel_type) or 0
 
-        await log_action(db, user.id, "search_result")
+            # Формируем результаты
+            results = []
+            for station in stations:
+                price_rec = prices.get(station.id)
+                if not price_rec:
+                    continue
+                avail_rec = avails.get(station.id)
+                rating_data = calculate_rating(
+                    station=station,
+                    user_lat=lat,
+                    user_lon=lon,
+                    price_record=price_rec,
+                    availability_record=avail_rec,
+                    avg_price_30d=avg_price or price_rec.price,
+                    min_price_30d=min_price or price_rec.price,
+                    max_price_30d=max_price or price_rec.price
+                )
+                results.append({
+                    "station": station,
+                    "price": price_rec.price,
+                    "price_time": price_rec.recorded_at,
+                    "availability": avail_rec.status if avail_rec else AvailabilityStatus.GRAY,
+                    "availability_time": avail_rec.recorded_at if avail_rec else None,
+                    "distance_km": haversine_distance(lat, lon, station.latitude, station.longitude),
+                    "rating": rating_data["rating"],
+                    "explanation": rating_data["explanation"]
+                })
+
+            if not results:
+                await message.answer("Не найдено АЗС с актуальными ценами. Попробуйте позже.")
+                await state.clear()
+                return
+
+            # Сортировка
+            if sort_mode == "price":
+                results.sort(key=lambda x: x["price"])
+            elif sort_mode == "distance":
+                results.sort(key=lambda x: x["distance_km"])
+            else:
+                results.sort(key=lambda x: x["rating"], reverse=True)
+
+            await state.update_data(all_results=results, current_index=0, is_pro=is_pro)
+
+            # Показываем лучший результат
+            await show_station_card(message, results[0], 0, len(results), is_pro, state)
+
+            # Логируем действие
+            await log_action(db, user.id, "search_result")
+
+    except Exception as e:
+        logger.error(f"Ошибка в perform_search: {e}", exc_info=True)
+        await message.answer("⚠️ Произошла ошибка при поиске. Попробуйте позже.")
+        await state.clear()
 
 # ---------- Функция отображения карточки ----------
 async def show_station_card(message: types.Message, result: dict, index: int, total: int, is_pro: bool, state: FSMContext):
-    if not result:
-        logger.error("show_station_card: result is None")
-        await message.answer("Произошла ошибка при формировании карточки. Попробуйте поискать заново.")
-        return
+    try:
+        if not result:
+            await message.answer("Ошибка: нет данных для отображения.")
+            return
 
-    station = result.get("station")
-    if not station:
-        logger.error(f"show_station_card: station is None in result: {result}")
-        await message.answer("Произошла ошибка при формировании карточки. Попробуйте поискать заново.")
-        return
+        station = result.get("station")
+        if not station:
+            await message.answer("Ошибка: данные о станции отсутствуют.")
+            return
 
-    price = result.get("price")
-    price_time = result.get("price_time")
-    availability = result.get("availability")
-    availability_time = result.get("availability_time")
-    distance_km = result.get("distance_km")
-    rating = result.get("rating")
-    explanation = result.get("explanation")
+        # Безопасное получение значений с защитой от None
+        price = result.get("price", 0.0)
+        price_time = result.get("price_time")
+        availability = result.get("availability", AvailabilityStatus.GRAY)
+        availability_time = result.get("availability_time")
+        distance_km = result.get("distance_km", 0.0)
+        rating = result.get("rating", 0)
+        explanation = result.get("explanation", "")
 
-    status_text = status_emoji(availability.value if availability else "GRAY")
-    status_time = format_time_ago(availability_time) if availability_time else "неизвестно"
-    price_time_str = format_time_ago(price_time)
+        status_text = status_emoji(availability.value if availability else "GRAY")
+        status_time = format_time_ago(availability_time) if availability_time else "неизвестно"
+        price_time_str = format_time_ago(price_time) if price_time else "неизвестно"
 
-    tank_volume = 50
-    fuel_consumption = 10
-    cost_to_drive = round((distance_km / 100) * fuel_consumption * price, 2) if distance_km and price else 0
+        tank_volume = 50
+        fuel_consumption = 10
+        cost_to_drive = round((distance_km / 100) * fuel_consumption * price, 2) if distance_km and price else 0
 
-    text = (
-        f"🏆 Рейтинг: {rating}/100\n"
-        f"⛽ {station.name}\n"
-        f"📍 {station.address}\n"
-        f"💰 {price:.2f} ₽ (обновлено {price_time_str})\n"
-        f"{status_text} Наличие: {availability.value if availability else 'GRAY'} ({status_time})\n"
-        f"📏 {distance_km:.1f} км (по прямой) | ~{round(distance_km / 40 * 60)} мин\n"
-        f"💸 Дорога до АЗС: ~{cost_to_drive} ₽ (из расхода 10 л/100км)\n"
-        f"📌 {explanation}\n"
-    )
-
-    if not is_pro:
-        text += (
-            "\n⚠️ <i>Цены и наличие обновляются каждые 2 часа. "
-            "Чтобы получать уведомления об изменениях — подключи PRO за 99 ₽/мес.</i>"
+        text = (
+            f"🏆 Рейтинг: {rating}/100\n"
+            f"⛽ {station.name}\n"
+            f"📍 {station.address}\n"
+            f"💰 {price:.2f} ₽ (обновлено {price_time_str})\n"
+            f"{status_text} Наличие: {availability.value if availability else 'GRAY'} ({status_time})\n"
+            f"📏 {distance_km:.1f} км (по прямой) | ~{round(distance_km / 40 * 60)} мин\n"
+            f"💸 Дорога до АЗС: ~{cost_to_drive} ₽ (из расхода 10 л/100км)\n"
+            f"📌 {explanation}\n"
         )
 
-    keyboard = station_action_keyboard(
-        station_id=station.id,
-        price=price,
-        availability=availability,
-        lat=station.latitude,
-        lon=station.longitude,
-        city_id=station.city_id,
-        is_pro=is_pro,
-        index=index,
-        total=total
-    )
+        if not is_pro:
+            text += (
+                "\n⚠️ <i>Цены и наличие обновляются каждые 2 часа. "
+                "Чтобы получать уведомления об изменениях — подключи PRO за 99 ₽/мес.</i>"
+            )
 
-    try:
+        keyboard = station_action_keyboard(
+            station_id=station.id,
+            price=price,
+            availability=availability,
+            lat=station.latitude,
+            lon=station.longitude,
+            city_id=station.city_id,
+            is_pro=is_pro,
+            index=index,
+            total=total
+        )
+
         await message.answer(text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as e:
         logger.error(f"Ошибка при отправке карточки: {e}", exc_info=True)
@@ -277,26 +341,33 @@ async def show_more(callback: types.CallbackQuery, state: FSMContext):
         current_index = data.get("current_index", 0)
         is_pro = data.get("is_pro", False)
 
-        next_index = current_index + 1
-        if next_index >= len(all_results):
+        if not all_results or current_index + 1 >= len(all_results):
             await callback.message.answer("Это все доступные варианты.")
             return
 
+        next_index = current_index + 1
         more_results = all_results[next_index:next_index+2]
+
         text = "📋 Дополнительные варианты:\n\n"
         for i, res in enumerate(more_results, start=next_index+1):
             station = res.get("station")
             if not station:
-                logger.warning(f"show_more: station is None for result {res}")
                 continue
-            price = res.get("price")
-            distance = res.get("distance_km")
-            availability = res.get("availability")
+            price = res.get("price", 0.0)
+            distance = res.get("distance_km", 0.0)
+            availability = res.get("availability", AvailabilityStatus.GRAY)
             status = availability.value if availability else "GRAY"
+
+            # Проверка координат перед ссылкой
+            if station.latitude and station.longitude:
+                map_link = f"<a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>"
+            else:
+                map_link = "Координаты отсутствуют"
+
             text += (
                 f"{i}. {station.name}\n"
                 f"   Цена: {price:.2f} ₽, наличие: {status}, расстояние: {distance:.1f} км\n"
-                f"   🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Маршрут</a>\n\n"
+                f"   🗺 {map_link}\n\n"
             )
 
         await state.update_data(current_index=next_index+1)
@@ -321,8 +392,11 @@ async def back_to_best(callback: types.CallbackQuery, state: FSMContext):
             await show_station_card(callback.message, all_results[0], 0, len(all_results), is_pro, state)
         else:
             await callback.message.answer("Нет сохранённых результатов.", reply_markup=main_menu_keyboard())
+            await state.clear()
     except Exception as e:
         logger.error(f"Ошибка в back_to_best: {e}", exc_info=True)
+        await callback.message.answer("Произошла ошибка. Попробуйте начать поиск заново.")
+        await state.clear()
 
 @router.callback_query(F.data == "restart_search")
 async def restart_search(callback: types.CallbackQuery, state: FSMContext):
@@ -330,7 +404,7 @@ async def restart_search(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await start_find(callback.message, state)
 
-# ---------- Остальные обработчики (с проверками) ----------
+# ---------- Остальные обработчики ----------
 @router.callback_query(F.data == "go_profile")
 async def go_profile_callback(callback: types.CallbackQuery):
     await callback.answer()
@@ -360,6 +434,7 @@ async def follow_price(callback: types.CallbackQuery):
             reply_markup=pro_purchase_keyboard()
         )
         return
+
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
@@ -369,11 +444,22 @@ async def follow_price(callback: types.CallbackQuery):
         if not station:
             await callback.message.answer("АЗС не найдена.")
             return
+
+        # Проверка существующей активной подписки
+        existing = await get_active_notifications_for_user(db, user.id)
+        for n in existing:
+            if n.station_id == station_id and n.fuel_type == FuelType.AI_95 and n.notify_on_low_price:
+                await callback.message.answer("Вы уже подписаны на эту АЗС на снижение цены.")
+                return
+
         latest_price = await get_latest_fresh_price(db, station_id, FuelType.AI_95)
         if not latest_price:
             await callback.message.answer("Не удалось получить текущую цену.")
             return
         target_price = round(latest_price.price - 0.5, 2)
+        if target_price < 0:
+            target_price = 0
+
         await create_notification(
             db,
             user_id=user.id,
@@ -394,10 +480,7 @@ async def subscribe_availability(callback: types.CallbackQuery):
     logger.info(f"[CALLBACK] alert_avail_ вызван: {callback.data}")
     await callback.answer()
     try:
-        parts = callback.data.split("_")
-        if len(parts) < 3:
-            raise ValueError("Недостаточно частей в callback")
-        station_id = int(parts[2])
+        station_id = int(callback.data.split("_")[2])
     except (IndexError, ValueError) as e:
         logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
         await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
@@ -413,15 +496,24 @@ async def subscribe_availability(callback: types.CallbackQuery):
             reply_markup=pro_purchase_keyboard()
         )
         return
+
     async with AsyncSessionLocal() as db:
         user = await get_user(db, callback.from_user.id)
         if not user:
-            await callback.answer("Сначала /start")
+            await callback.message.answer("Сначала /start")
             return
         station = await get_station_by_id(db, station_id)
         if not station:
             await callback.answer("АЗС не найдена")
             return
+
+        # Проверка дубликата
+        existing = await get_active_notifications_for_user(db, user.id)
+        for n in existing:
+            if n.station_id == station_id and n.fuel_type == FuelType.AI_95 and n.notify_on_availability:
+                await callback.message.answer("Вы уже подписаны на уведомления о появлении на этой АЗС.")
+                return
+
         await create_notification(
             db,
             user_id=user.id,
@@ -438,10 +530,7 @@ async def start_report_price(callback: types.CallbackQuery, state: FSMContext):
     logger.info(f"[CALLBACK] report_price_ вызван: {callback.data}")
     await callback.answer()
     try:
-        parts = callback.data.split("_")
-        if len(parts) < 3:
-            raise ValueError("Недостаточно частей в callback")
-        station_id = int(parts[2])
+        station_id = int(callback.data.split("_")[2])
     except (IndexError, ValueError) as e:
         logger.error(f"Ошибка парсинга station_id из {callback.data}: {e}")
         await callback.message.answer("Произошла ошибка. Попробуйте ещё раз.")
