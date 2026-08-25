@@ -6,7 +6,6 @@ from typing import Dict, Any, List, Tuple, Optional
 from sqlalchemy import text, select, func, delete
 
 from aiogram import Bot
-from aiogram.types import Message, CallbackQuery
 
 from database.session import AsyncSessionLocal
 from database.models import (
@@ -23,9 +22,8 @@ from database.crud import (
 from services.fuelprice_parser import fetch_fuelprice_prices
 from services.notifications import check_notifications
 from services.subscription import check_pro, format_pro_until
-from services.funnel import process_funnel
 from services.rating import calculate_rating
-from keyboards.inline import station_action_keyboard, pro_purchase_keyboard
+from keyboards.inline import station_action_keyboard
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -101,7 +99,7 @@ class SelfTester:
         # 7. Выбор города для тестового пользователя
         await self._set_user_city()
 
-        # 8. Поиск АЗС (эмуляция)
+        # 8. Эмуляция поиска
         await self._emulate_search()
 
         # 9. Создание уведомления
@@ -122,7 +120,7 @@ class SelfTester:
         # 14. Проверка парсинга цен (упрощённо)
         await self._check_parser()
 
-        # 15. Проверка воронки (funnel)
+        # 15. Проверка воронки (funnel) – без отправки сообщений
         await self._check_funnel()
 
         # 16. Проверка отписки от уведомления
@@ -134,15 +132,13 @@ class SelfTester:
         # 18. Проверка рейтинга (calculate_rating)
         await self._check_rating()
 
-        # 19. Проверка геокодера (если ключ есть)
+        # 19. Проверка геокодера
         await self._check_geocoder()
 
         # 20. Очистка тестовых данных
         await self._cleanup()
 
         return self.result
-
-    # ---------- Каждый метод проверки ----------
 
     async def _check_db_connection(self):
         start = time.time()
@@ -203,10 +199,7 @@ class SelfTester:
             if not stations:
                 self.result.add("АЗС и цены", False, "Нет АЗС", time.time() - start)
                 return
-            # Сохраним первую станцию для тестов
             self.result.test_station_id = stations[0].id
-
-            # Проверим свежие цены (за 2 часа)
             cutoff = datetime.utcnow() - timedelta(hours=2)
             price_count = await db.execute(
                 select(func.count(FuelPrice.id))
@@ -225,10 +218,8 @@ class SelfTester:
     async def _create_test_user(self):
         start = time.time()
         async with AsyncSessionLocal() as db:
-            # Удалим существующего тестового пользователя
             await db.execute(text("DELETE FROM users WHERE telegram_id = :tid"), {"tid": TEST_TELEGRAM_ID})
             await db.commit()
-            # Создадим
             user = await create_user(db, TEST_TELEGRAM_ID, TEST_USERNAME)
             if not user:
                 self.result.add("Создание тестового пользователя", False, "Не удалось создать", time.time() - start)
@@ -253,18 +244,15 @@ class SelfTester:
 
     async def _emulate_search(self):
         start = time.time()
-        # Эмулируем поиск: вызываем функцию set_first_search и логируем действие
         async with AsyncSessionLocal() as db:
             user = await get_user(db, TEST_TELEGRAM_ID)
             if not user:
                 self.result.add("Эмуляция поиска", False, "Пользователь не найден", time.time() - start)
                 return
             await set_first_search(db, user.id)
-            # Также запишем действие
             action = UserAction(user_id=user.id, action="search_result", station_id=self.result.test_station_id)
             db.add(action)
             await db.commit()
-            # Проверим, что funnel_stage изменился
             user2 = await get_user(db, TEST_TELEGRAM_ID)
             if user2.funnel_stage == 1:
                 self.result.add("Эмуляция поиска", True, "Поиск залогирован, стадия воронки = 1", time.time() - start)
@@ -282,13 +270,12 @@ class SelfTester:
             if not station_id:
                 self.result.add("Создание уведомления", False, "ID станции не найден", time.time() - start)
                 return
-            # Создадим уведомление о снижении цены
             notif = await create_notification(
                 db,
                 user_id=user.id,
                 fuel_type=FuelType.AI_95,
                 station_id=station_id,
-                target_price=50.0,  # низкая цена, чтобы сработало, если цена упадёт
+                target_price=50.0,
                 notify_on_low_price=True
             )
             if not notif:
@@ -304,7 +291,6 @@ class SelfTester:
             if not user:
                 self.result.add("Эмуляция оплаты PRO", False, "Пользователь не найден", time.time() - start)
                 return
-            # Создаём запись платежа
             payment = await create_payment(
                 db,
                 user.id,
@@ -318,13 +304,9 @@ class SelfTester:
                 self.result.add("Эмуляция оплаты PRO", False, "Не удалось создать платёж", time.time() - start)
                 return
             self.result.test_payment_id = payment.id
-
-            # Активируем PRO
             await activate_pro(db, user, days=30)
-            user.auto_renew = True  # для проверки
+            user.auto_renew = True
             await db.commit()
-
-            # Проверим, что PRO активировался
             user2 = await get_user(db, TEST_TELEGRAM_ID)
             if user2.is_pro and user2.pro_until is not None:
                 self.result.add("Эмуляция оплаты PRO", True, f"PRO до {format_pro_until(user2.pro_until)}", time.time() - start)
@@ -333,7 +315,6 @@ class SelfTester:
 
     async def _check_pro_rights(self):
         start = time.time()
-        # Проверяем через функцию check_pro
         is_pro = await check_pro(TEST_TELEGRAM_ID)
         if is_pro:
             self.result.add("Проверка PRO-прав", True, "check_pro вернул True", time.time() - start)
@@ -342,8 +323,6 @@ class SelfTester:
 
     async def _check_pro_keyboard(self):
         start = time.time()
-        # Проверяем, что для PRO-пользователя генерируются PRO-кнопки
-        # Создаём клавиатуру с is_pro=True
         kb = station_action_keyboard(
             station_id=self.result.test_station_id or 1,
             price=65.0,
@@ -353,9 +332,7 @@ class SelfTester:
             city_id=self.result.test_city_id or 1,
             is_pro=True
         )
-        # Проверяем, есть ли кнопки с нужными callback'ами
         buttons = kb.inline_keyboard
-        # Ищем кнопки "График цен", "Увед. о появлении", "Следить за ценой"
         pro_callbacks = ["graph_", "alert_avail_", "follow_"]
         found = 0
         for row in buttons:
@@ -370,7 +347,6 @@ class SelfTester:
     async def _check_notifications_engine(self):
         start = time.time()
         try:
-            # Вызовем check_notifications (она отправит уведомления, если есть подписки)
             await check_notifications()
             self.result.add("Движок уведомлений", True, "Выполнен без ошибок", time.time() - start)
         except Exception as e:
@@ -379,9 +355,6 @@ class SelfTester:
     async def _check_parser(self):
         start = time.time()
         try:
-            # Запускаем парсинг для города с небольшим числом станций (например, Москва)
-            # Но чтобы не перегружать, просто проверим, что функция не падает
-            # Время выполнения ограничим 15 секундами
             await asyncio.wait_for(fetch_fuelprice_prices("Москва"), timeout=15)
             self.result.add("Парсер цен", True, "Парсинг для Москвы выполнен (или таймаут)", time.time() - start)
         except asyncio.TimeoutError:
@@ -390,21 +363,14 @@ class SelfTester:
             self.result.add("Парсер цен", False, f"Ошибка: {e}", time.time() - start)
 
     async def _check_funnel(self):
-    start = time.time()
-    try:
-        # Временно подменим отправку, чтобы не слать тестовому пользователю
-        # Просто проверим, что функция не падает
-        # Но чтобы не спамить, вызовем с флагом тестирования
-        # Можно просто вызвать process_funnel, но она отправит сообщение тестовому пользователю (которого нет)
-        # Поэтому лучше вообще не вызывать, а просто проверить импорт и синтаксис
-        from services.funnel import process_funnel
-        # Проверим, что функция существует
-        if callable(process_funnel):
+        start = time.time()
+        # Просто проверяем, что функция существует и не падает при импорте
+        try:
+            from services.funnel import process_funnel
+            # Не вызываем, чтобы не спамить тестовым пользователям
             self.result.add("Воронка (funnel)", True, "Функция загружена", time.time() - start)
-        else:
-            self.result.add("Воронка (funnel)", False, "Функция не является callable", time.time() - start)
-    except Exception as e:
-        self.result.add("Воронка (funnel)", False, f"Ошибка: {e}", time.time() - start)
+        except Exception as e:
+            self.result.add("Воронка (funnel)", False, f"Ошибка импорта: {e}", time.time() - start)
 
     async def _check_unsubscribe(self):
         start = time.time()
@@ -414,7 +380,6 @@ class SelfTester:
                 self.result.add("Отписка от уведомления", False, "Нет ID уведомления", time.time() - start)
                 return
             await deactivate_notification(db, notif_id)
-            # Проверим, что деактивировано
             from database.crud import get_notification_by_id
             notif = await get_notification_by_id(db, notif_id)
             if notif and notif.active == False:
@@ -424,30 +389,23 @@ class SelfTester:
 
     async def _check_admin_commands(self):
         start = time.time()
-        # Проверим создание и удаление города (без реального удаления реальных данных)
-        # Создадим временный город
         test_city_name = "TestCity_SelfCheck"
         async with AsyncSessionLocal() as db:
-            # Удалим, если существует
             await db.execute(text("DELETE FROM cities WHERE name = :name"), {"name": test_city_name})
             await db.commit()
-            # Создадим
             city = City(name=test_city_name, region="Test Region")
             db.add(city)
             await db.commit()
             await db.refresh(city)
             city_id = city.id
-            # Удалим
             await db.execute(text("DELETE FROM cities WHERE id = :id"), {"id": city_id})
             await db.commit()
             self.result.add("Админ-команды (добавление/удаление города)", True, "Город создан и удалён", time.time() - start)
             return
-        self.result.add("Админ-команды", False, "Ошибка при работе с городом", time.time() - start)
 
     async def _check_rating(self):
         start = time.time()
         from database.models import Station, FuelPrice, AvailabilityReport
-        # Создадим фейковые данные для расчета
         station = Station(id=1, latitude=55.0, longitude=82.0)
         price = FuelPrice(price=65.0, recorded_at=datetime.utcnow())
         avail = AvailabilityReport(status=AvailabilityStatus.GREEN, recorded_at=datetime.utcnow(), confidence=0.9)
@@ -478,16 +436,11 @@ class SelfTester:
     async def _cleanup(self):
         start = time.time()
         async with AsyncSessionLocal() as db:
-            # Удаляем тестового пользователя и связанные данные
             user = await get_user(db, TEST_TELEGRAM_ID)
             if user:
-                # Удаляем уведомления
                 await db.execute(delete(Notification).where(Notification.user_id == user.id))
-                # Удаляем платежи
                 await db.execute(delete(Payment).where(Payment.user_id == user.id))
-                # Удаляем действия
                 await db.execute(delete(UserAction).where(UserAction.user_id == user.id))
-                # Удаляем пользователя
                 await db.execute(delete(User).where(User.id == user.id))
                 await db.commit()
                 self.result.add("Очистка тестовых данных", True, "Все тестовые записи удалены", time.time() - start)
