@@ -26,7 +26,6 @@ def is_admin(user_id: int) -> bool:
 # ---------- Универсальный декоратор для админ-команд ----------
 def admin_only(func):
     async def wrapper(*args, **kwargs):
-        # Находим message в args или kwargs
         message = None
         for arg in args:
             if isinstance(arg, types.Message):
@@ -35,7 +34,6 @@ def admin_only(func):
         if not message and 'message' in kwargs:
             message = kwargs['message']
         if not message:
-            # Если не нашли, возможно это callback_query, но в нашем случае только Message
             return await func(*args, **kwargs)
         if not is_admin(message.from_user.id):
             await message.answer("⛔ Нет прав.")
@@ -48,7 +46,7 @@ def parse_args(message: types.Message, min_count: int, usage: str):
     """Возвращает список частей или None с отправкой сообщения об использовании."""
     parts = message.text.split()
     if len(parts) < min_count:
-        asyncio.create_task(message.answer(usage))  # асинхронный ответ без ожидания
+        asyncio.create_task(message.answer(usage))
         return None
     return parts
 
@@ -65,12 +63,6 @@ async def get_station_or_reply(db, station_id: int, message: types.Message):
         await message.answer("АЗС не найдена.")
         return None
     return station
-
-def parse_coords(parts, idx):
-    try:
-        return float(parts[idx]), float(parts[idx+1])
-    except (ValueError, IndexError):
-        return None, None
 
 # ---------- Стандартные админ-команды ----------
 @router.message(Command("add_city"))
@@ -550,69 +542,3 @@ async def set_station_address_cmd(message: types.Message):
         station.address = address
         await db.commit()
         await message.answer(f"✅ Адрес для станции «{station.name}» (ID {station.id}) установлен:\n{address}")
-
-@router.message(Command("fix_addresses"))
-@admin_only
-async def fix_addresses_cmd(message: types.Message):
-    await message.answer("🔄 Начинаю автоматическое восстановление адресов...")
-    async with AsyncSessionLocal() as db:
-        stations = (await db.execute(
-            select(Station).where(
-                (Station.address.contains("₽")) |
-                (Station.address.contains("<strong>")) |
-                (Station.address.contains("<br>")) |
-                (Station.address.contains("Аи-")) |
-                (Station.address.contains("АИ-")) |
-                (Station.address.contains("ДТ:")) |
-                (Station.address == "") |
-                (Station.address.is_(None)) |
-                (func.length(Station.address) > 200)
-            )
-        )).scalars().all()
-        if not stations:
-            await message.answer("✅ Все адреса уже корректны.")
-            return
-
-        updated = failed = 0
-        results = []
-        for station in stations:
-            clean_address = None
-            if station.address:
-                # Попытка извлечь адрес
-                match = re.search(r'(?:г\.?|город)\s*([^,)]+)[,.]?\s*(ул\.?\s*[^,]+[,.]?\s*[^,)]+)', station.address, re.I)
-                if match:
-                    clean_address = f"г. {match.group(1).strip()}, {match.group(2).strip()}"
-                else:
-                    match = re.search(r'(ул\.?\s*[^,)]+[,.]?\s*[^,)]+)', station.address, re.I)
-                    if match:
-                        clean_address = match.group(1).strip()
-                    else:
-                        match = re.search(r'(?:город|г\.)\s*([^,)]+)[,.]?\s*(.+)', station.address, re.I)
-                        if match:
-                            clean_address = f"г. {match.group(1).strip()}, {match.group(2).strip()}"
-
-            if not clean_address and station.name:
-                name_clean = re.sub(r'А[иИ]-\d+.*$', '', station.name, flags=re.I)
-                name_clean = re.sub(r'ДТ:.*$', '', name_clean, flags=re.I).strip()
-                if name_clean and len(name_clean) < 100 and not re.match(r'^\d+\s+', name_clean):
-                    clean_address = name_clean
-
-            if clean_address and len(clean_address) < 250:
-                station.address = clean_address
-                updated += 1
-                results.append(f"✅ {station.name[:30]} → {clean_address[:40]}")
-            else:
-                failed += 1
-
-        await db.commit()
-
-    report = f"📊 <b>Результат восстановления адресов</b>\n\n✅ Обновлено: {updated}\n❌ Не удалось восстановить: {failed}\n\n"
-    if results[:10]:
-        report += "📋 <b>Примеры исправленных адресов:</b>\n"
-        for r in results[:10]:
-            report += f"• {r}\n"
-        if len(results) > 10:
-            report += f"... и ещё {len(results) - 10}"
-    if failed > 0:
-        report += f"\n\n⚠️ Осталось {failed} станций без адреса. Используйте /stations_without_address и /set_station_address для ручного исправления."
-    await message.answer(report, parse_mode="HTML")
