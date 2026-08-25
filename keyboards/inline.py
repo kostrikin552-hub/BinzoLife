@@ -49,29 +49,27 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")]
     ])
 
+# ИСПРАВЛЕННАЯ ФУНКЦИЯ
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
     yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
-    # Основные кнопки: Маршрут и другие
     buttons = [
-        [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)],  # первая строка
-        [
-            InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}"),
-            InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")
-        ]
+        [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)]
     ]
+    # Кнопки "Показать ещё" и "Сообщить цену" – всегда доступны
+    buttons.append([InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}")])
+    buttons.append([InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")])
+
     if is_pro:
-        buttons.append([
-            InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}"),
-            InlineKeyboardButton(text="🟢 Увед. о появлении", callback_data=f"alert_avail_{station_id}")
-        ])
-        buttons.append([
-            InlineKeyboardButton(text="📉 Следить за ценой", callback_data=f"follow_{station_id}")
-        ])
+        buttons.append([InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}")])
+        buttons.append([InlineKeyboardButton(text="🟢 Увед. о появлении", callback_data=f"alert_avail_{station_id}")])
+        buttons.append([InlineKeyboardButton(text="📉 Следить за ценой", callback_data=f"follow_{station_id}")])
     else:
         buttons.append([InlineKeyboardButton(text="🔒 PRO-функции", callback_data="show_pro")])
+
     if city_id:
         map_url = f"https://yandex.ru/maps/?mode=search&text=АЗС&ll={lon},{lat}&z=13"
         buttons.append([InlineKeyboardButton(text="🗺 Показать все АЗС на карте", url=map_url)])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def notification_action_keyboard(notif_id: int):
