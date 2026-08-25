@@ -21,6 +21,7 @@ from database.models import (
     FuelPrice, AvailabilityReport, UserAction, Notification
 )
 from services.city_importer import import_city_from_url
+from services.selfcheck import run_self_check  # <-- ДОБАВЛЕНО
 
 router = Router()
 
@@ -631,7 +632,7 @@ async def set_station_address_cmd(message: types.Message):
         await db.commit()
         await message.answer(f"✅ Адрес для станции «{station.name}» (ID {station.id}) установлен:\n{address}")
 
-# ========== МАССОВАЯ РАССЫЛКА ==========
+# ---------- МАССОВАЯ РАССЫЛКА ----------
 @router.message(Command("broadcast"))
 @admin_only
 async def broadcast_cmd(message: types.Message):
@@ -659,3 +660,20 @@ async def broadcast_cmd(message: types.Message):
             except Exception as e:
                 logger.error(f"Ошибка отправки broadcast пользователю {user.telegram_id}: {e}")
         await message.answer(f"✅ Рассылка отправлена {sent} пользователям из сегмента '{segment}'.")
+
+# ========== КОМАНДА SELF TEST ==========
+@router.message(Command("selftest"))
+@admin_only
+async def self_test(message: types.Message):
+    """Запуск расширенной самопроверки всех систем"""
+    await message.answer("🔄 Запускаю полную самопроверку... Это может занять до 60 секунд.")
+    try:
+        result = await run_self_check()
+        summary = result.summary()
+        if len(summary) > 4000:
+            for i in range(0, len(summary), 4000):
+                await message.answer(summary[i:i+4000], parse_mode="Markdown")
+        else:
+            await message.answer(summary, parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Критическая ошибка при выполнении самопроверки: {e}")
