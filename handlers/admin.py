@@ -4,14 +4,17 @@ import asyncio
 import re
 from aiogram import Router, types, F
 from aiogram.filters import Command
+from sqlalchemy import select
 from config import settings
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, create_station, save_price, get_user, get_station_by_id,
     deactivate_station, activate_pro, get_station_by_name_address, get_all_reviews,
-    get_avg_rating, set_city_slug, save_availability_report_with_consensus
+    get_avg_rating, set_city_slug, save_availability_report_with_consensus,
+    get_user_stats, get_payment_stats, get_funnel_stats,
+    get_review_stats, get_referral_stats
 )
-from database.models import SourceType, AvailabilityStatus, FuelType
+from database.models import SourceType, AvailabilityStatus, FuelType, Station
 from services.city_importer import import_city_from_url
 
 router = Router()
@@ -325,7 +328,7 @@ async def import_city_cmd(message: types.Message):
     )
     await message.answer(text, parse_mode=None)
 
-# ---------- Импорт всех городов из списка (без Санкт-Петербурга) ----------
+# ---------- Импорт всех городов ----------
 @router.message(Command("import_all_cities"))
 async def import_all_cities_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -369,7 +372,7 @@ async def import_all_cities_cmd(message: types.Message):
     else:
         await message.answer(report, parse_mode=None)
 
-# ---------- Установка координат города (с поддержкой пробелов в названии) ----------
+# ---------- Установка координат ----------
 @router.message(Command("set_city_coords"))
 async def set_city_coords_cmd(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -377,12 +380,10 @@ async def set_city_coords_cmd(message: types.Message):
         return
 
     text = message.text
-    # Удаляем команду из строки
     cmd = "/set_city_coords"
     if text.startswith(cmd):
         text = text[len(cmd):].strip()
 
-    # Разбиваем оставшуюся строку на токены
     tokens = text.split()
     if len(tokens) < 3:
         await message.answer(
@@ -392,7 +393,6 @@ async def set_city_coords_cmd(message: types.Message):
         )
         return
 
-    # Последние два токена — координаты
     try:
         lat = float(tokens[-2])
         lon = float(tokens[-1])
@@ -400,7 +400,6 @@ async def set_city_coords_cmd(message: types.Message):
         await message.answer("❌ Неверный формат координат. Используйте числа с точкой.")
         return
 
-    # Всё остальное — название города (объединяем через пробел)
     city_name = " ".join(tokens[:-2])
 
     async with AsyncSessionLocal() as db:
@@ -413,12 +412,8 @@ async def set_city_coords_cmd(message: types.Message):
         city.longitude = lon
         await db.commit()
         await message.answer(f"✅ Координаты для города '{city_name}' установлены: {lat}, {lon}")
-from database.crud import (
-    # ... существующие импорты ...
-    get_user_stats, get_payment_stats, get_funnel_stats,
-    get_review_stats, get_referral_stats
-)
 
+# ---------- Статистика ----------
 @router.message(Command("stats"))
 async def show_stats(message: types.Message):
     if not is_admin(message.from_user.id):
@@ -432,7 +427,6 @@ async def show_stats(message: types.Message):
         review_stats = await get_review_stats(db)
         referral_stats = await get_referral_stats(db)
 
-    # Формируем текст
     text = "📊 <b>Статистика BinzoLife</b>\n\n"
 
     text += "👥 <b>Пользователи</b>\n"
@@ -454,17 +448,22 @@ async def show_stats(message: types.Message):
     text += "\n"
 
     text += "🔄 <b>Воронка</b>\n"
-    stage_names = {
-        0: "❌ Не начали поиск",
-        1: "👋 1 день после первого поиска",
-        2: "📊 3 дня",
-        3: "⚠️ 7 дней",
-        4: "🎁 14 дней",
-        5: "💤 Завершено"
-    }
-    for stage, count in funnel_stats.items():
-        name = stage_names.get(stage, f"Стадия {stage}")
-        text += f"▪ {name}: {count}\n"
+    total_funnel = sum(funnel_stats.values())
+    if total_funnel > 0:
+        stage_names = {
+            0: "❌ Не начали поиск",
+            1: "👋 1 день после первого поиска",
+            2: "📊 3 дня",
+            3: "⚠️ 7 дней",
+            4: "🎁 14 дней",
+            5: "💤 Завершено"
+        }
+        for stage, count in funnel_stats.items():
+            name = stage_names.get(stage, f"Стадия {stage}")
+            percent = round(count / total_funnel * 100, 1) if total_funnel > 0 else 0
+            text += f"▪ {name}: {count} ({percent}%)\n"
+    else:
+        text += "▪ Нет данных по воронке (пользователи не совершали поиск)\n"
     text += "\n"
 
     text += "⭐ <b>Отзывы</b>\n"
@@ -477,3 +476,36 @@ async def show_stats(message: types.Message):
     text += f"▪ Получили бонус: {referral_stats['rewarded']}\n"
 
     await message.answer(text, parse_mode="HTML")
+
+# ---------- Очистка адресов АЗС ----------
+@router.message(Command("clean_addresses"))
+async def clean_addresses_cmd(message: types.Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Нет прав.")
+        return
+
+    await message.answer("🔄 Начинаю очистку адресов АЗС...")
+
+    async with AsyncSessionLocal() as db:
+        # Находим все станции с адресом, содержащим HTML-теги
+        stations = await db.execute(
+            select(Station).where(
+                Station.address.contains("<strong>") | Station.address.contains("<br>")
+            )
+        )
+        stations = stations.scalars().all()
+        count = len(stations)
+
+        if count == 0:
+            await message.answer("✅ Испорченных адресов не найдено.")
+            return
+
+        # Очищаем адреса
+        for station in stations:
+            station.address = ""
+        await db.commit()
+
+        await message.answer(
+            f"✅ Очищено {count} адресов АЗС.\n\n"
+            "Теперь запустите /import_all_cities, чтобы обновить адреса из парсера."
+        )
