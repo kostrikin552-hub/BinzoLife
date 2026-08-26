@@ -37,15 +37,20 @@ async def check_notifications():
                 if station:
                     price = await get_latest_price(db, station.id, notif.fuel_type)
                     if price and price.price <= notif.target_price:
+                        # Получаем предыдущую цену (для сравнения)
+                        old_price = await get_latest_price_before(db, station.id, notif.fuel_type, price.recorded_at)
+                        if old_price is None:
+                            old_price = price.price + 0.5  # заглушка
                         try:
                             kb = InlineKeyboardMarkup(inline_keyboard=[
                                 [InlineKeyboardButton(text="❌ Отписаться", callback_data=f"unsub_{notif.id}")]
                             ])
                             await bot.send_message(
                                 notif.user.telegram_id,
-                                f"📉 Цена на АЗС «{station.name}» упала до {price.price:.2f} ₽ (было выше).\n"
-                                f"Экономия: до {round((notif.target_price - price.price), 2)} ₽ за литр.\n"
-                                f"Заправляйся сейчас! 🚗",
+                                f"🔔 Цена на «{station.name}» снизилась!\n"
+                                f"Было: {old_price:.2f} ₽/л\n"
+                                f"Стало: {price.price:.2f} ₽/л (на {old_price - price.price:.2f} ₽ дешевле)\n\n"
+                                f"Заправиться сейчас?",
                                 reply_markup=kb
                             )
                             await deactivate_notification(db, notif.id)
@@ -76,10 +81,9 @@ async def check_notifications():
                                 ])
                                 await bot.send_message(
                                     notif.user.telegram_id,
-                                    f"⛽ На АЗС «{station.name}» появился 95-й бензин!\n"
-                                    f"Цена: {await get_latest_price(db, station.id, notif.fuel_type).price:.2f} ₽\n"
-                                    f"Адрес: {station.address}\n\n"
-                                    f"Успей, пока не разобрали!",
+                                    f"🟢 На «{station.name}» появилось топливо!\n"
+                                    f"Статус: GREEN — можно ехать.\n\n"
+                                    f"Заправиться сейчас?",
                                     reply_markup=kb
                                 )
                                 await update_notification_last_triggered(db, notif.id)
@@ -123,7 +127,7 @@ async def check_notifications():
                                 ])
                                 await bot.send_message(
                                     user.telegram_id,
-                                    f"🔔 В радиусе {notif.radius_km} км появилось топливо {notif.fuel_type.value} на АЗС {st.name}! 🟢",
+                                    f"🔔 В радиусе {notif.radius_km} км появилось топливо на АЗС {st.name}! 🟢",
                                     reply_markup=kb
                                 )
                                 await update_notification_last_triggered(db, notif.id)
@@ -131,3 +135,17 @@ async def check_notifications():
                             except Exception as e:
                                 logger.error(f"Ошибка отправки уведомления: {e}")
                             break
+
+# Вспомогательная функция для получения предыдущей цены
+async def get_latest_price_before(db, station_id: int, fuel_type, before_time: datetime):
+    result = await db.execute(
+        select(FuelPrice)
+        .where(
+            FuelPrice.station_id == station_id,
+            FuelPrice.fuel_type == fuel_type,
+            FuelPrice.recorded_at < before_time
+        )
+        .order_by(FuelPrice.recorded_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
