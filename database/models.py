@@ -1,6 +1,6 @@
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
-    Enum, Text, Index, func
+    Enum, Text, Index, func, Date
 )
 from sqlalchemy.orm import declarative_base, relationship
 import enum
@@ -57,6 +57,10 @@ class Station(Base):
     longitude = Column(Float, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # НОВЫЕ ПОЛЯ ДЛЯ СЧЁТЧИКА ПРОСМОТРОВ
+    daily_views = Column(Integer, default=0)
+    last_view_date = Column(Date, nullable=True)
 
     city = relationship("City", back_populates="stations")
     prices = relationship("FuelPrice", back_populates="station")
@@ -115,12 +119,10 @@ class User(Base):
     first_search_at = Column(DateTime(timezone=True), nullable=True)
     funnel_stage = Column(Integer, default=0)
     last_funnel_message_at = Column(DateTime(timezone=True), nullable=True)
-
-    # НОВЫЕ ПОЛЯ
     trial_used = Column(Boolean, default=False)
     trial_started = Column(DateTime(timezone=True), nullable=True)
-    silent_hours_start = Column(Integer, nullable=True)   # часы от 0 до 23
-    silent_hours_end = Column(Integer, nullable=True)     # часы от 0 до 23
+    silent_hours_start = Column(Integer, nullable=True)
+    silent_hours_end = Column(Integer, nullable=True)
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
