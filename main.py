@@ -28,7 +28,7 @@ from services.notifications import check_notifications
 from services.fuel import refresh_prices
 from database.crud import (
     expire_old_prices, expire_old_availability, check_and_award_achievements,
-    reset_daily_views  # <-- ДОБАВЛЕНО
+    reset_daily_views
 )
 from database.session import AsyncSessionLocal
 
@@ -146,6 +146,10 @@ async def ensure_schema_updates():
     await add_column_if_not_exists("users", "trial_started", "TIMESTAMP WITH TIME ZONE")
     await add_column_if_not_exists("users", "silent_hours_start", "INTEGER")
     await add_column_if_not_exists("users", "silent_hours_end", "INTEGER")
+    
+    # НОВЫЕ КОЛОНКИ ДЛЯ СЧЁТЧИКА ПРОСМОТРОВ В ТАБЛИЦЕ STATIONS
+    await add_column_if_not_exists("stations", "daily_views", "INTEGER", "0")
+    await add_column_if_not_exists("stations", "last_view_date", "DATE")
 
     # Создаём таблицы, если их нет
     await create_table_if_not_exists("city_slugs", """
@@ -224,7 +228,6 @@ async def funnel_worker():
             logger.error(f"Ошибка в funnel_worker: {e}")
         await asyncio.sleep(600)
 
-# НОВАЯ ЗАДАЧА: СБРОС ПРОСМОТРОВ
 async def reset_views_periodically():
     while True:
         await asyncio.sleep(600)  # каждые 10 минут
@@ -321,7 +324,7 @@ async def on_startup():
     asyncio.create_task(expire_old_data_periodically())
     asyncio.create_task(check_achievements_periodically())
     asyncio.create_task(funnel_worker())
-    asyncio.create_task(reset_views_periodically())  # <-- НОВАЯ ЗАДАЧА
+    asyncio.create_task(reset_views_periodically())
     logger.info("Бот запущен, фоновые задачи активны")
     try:
         await bot.send_message(settings.ADMIN_ID, "✅ Бот успешно запущен и готов к работе!")
