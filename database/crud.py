@@ -1190,3 +1190,28 @@ async def get_marketing_stats(db: AsyncSession) -> dict:
         "ltv": ltv,
         "conversion_search_to_pro": conversion_search_to_pro,
     }
+# ========== ПРОСМОТРЫ АЗС ==========
+from datetime import date
+
+async def increment_station_views(db: AsyncSession, station_id: int) -> int:
+    """Увеличивает счётчик просмотров для АЗС и возвращает новое значение"""
+    station = await get_station_by_id(db, station_id)
+    if not station:
+        return 0
+    today = date.today()
+    if station.last_view_date != today:
+        station.daily_views = 0
+        station.last_view_date = today
+    station.daily_views += 1
+    await db.commit()
+    return station.daily_views
+
+async def reset_daily_views(db: AsyncSession):
+    """Сбрасывает daily_views для всех станций, у которых last_view_date != сегодня"""
+    today = date.today()
+    await db.execute(
+        update(Station)
+        .where(Station.last_view_date != today)
+        .values(daily_views=0, last_view_date=today)
+    )
+    await db.commit()
