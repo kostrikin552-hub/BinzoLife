@@ -10,9 +10,7 @@ from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popula
 
 router = Router()
 
-# ID канала (можно использовать как с минусом, так и без)
-# Для проверки лучше использовать числовой ID, полученный через @userinfobot
-CHANNEL_ID = -1004398885383  # или можно оставить как -1004398885383
+CHANNEL_ID = -1004398885383
 CHANNEL_LINK = "https://t.me/BinzoLife_News"
 
 class SubscribeStates(StatesGroup):
@@ -20,22 +18,11 @@ class SubscribeStates(StatesGroup):
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    # Проверяем подписку на канал
     user_id = message.from_user.id
-    is_subscribed = False
-    try:
-        # Пробуем проверить через числовой ID
-        chat_member = await message.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        is_subscribed = chat_member.status in ["member", "administrator", "creator"]
-    except Exception as e:
-        # Если не получилось (например, бот не админ или канал скрыт), пробуем через username
-        try:
-            chat_member = await message.bot.get_chat_member(chat_id="@BinzoLife_News", user_id=user_id)
-            is_subscribed = chat_member.status in ["member", "administrator", "creator"]
-        except Exception:
-            # Если проверка совсем недоступна, пропускаем (можно выставить True, чтобы не блокировать)
-            # Но лучше попросить подписаться в любом случае, чтобы не терять аудиторию
-            is_subscribed = False
+    username = message.from_user.username
+
+    # Проверяем подписку на канал
+    is_subscribed = await check_subscription(message.bot, user_id)
 
     if not is_subscribed:
         await state.set_state(SubscribeStates.waiting_subscribe)
@@ -58,16 +45,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 @router.callback_query(F.data == "check_subscribe", SubscribeStates.waiting_subscribe)
 async def check_subscribe(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
-    is_subscribed = False
-    try:
-        chat_member = await callback.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        is_subscribed = chat_member.status in ["member", "administrator", "creator"]
-    except Exception:
-        try:
-            chat_member = await callback.bot.get_chat_member(chat_id="@BinzoLife_News", user_id=user_id)
-            is_subscribed = chat_member.status in ["member", "administrator", "creator"]
-        except Exception:
-            is_subscribed = False
+    is_subscribed = await check_subscription(callback.bot, user_id)
 
     if is_subscribed:
         await callback.message.delete()
@@ -75,10 +53,24 @@ async def check_subscribe(callback: types.CallbackQuery, state: FSMContext):
         await state.clear()
         await process_start(callback.message, state)
     else:
-        await callback.answer("❌ Вы ещё не подписались на канал. Пожалуйста, подпишитесь и нажмите кнопку снова.", show_alert=True)
+        await callback.answer(
+            "❌ Вы ещё не подписались на канал. Пожалуйста, подпишитесь и нажмите кнопку снова.",
+            show_alert=True
+        )
+
+async def check_subscription(bot, user_id: int) -> bool:
+    try:
+        chat_member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        return chat_member.status in ["member", "administrator", "creator"]
+    except Exception:
+        try:
+            chat_member = await bot.get_chat_member(chat_id="@BinzoLife_News", user_id=user_id)
+            return chat_member.status in ["member", "administrator", "creator"]
+        except Exception:
+            # Если бот не может проверить (не админ) – пропускаем
+            return True
 
 async def process_start(message: types.Message, state: FSMContext):
-    # Вся основная логика /start
     args = message.text.split()
     user_id = message.from_user.id
     username = message.from_user.username
@@ -106,14 +98,24 @@ async def process_start(message: types.Message, state: FSMContext):
                 user.city_id = city.id
                 await db.commit()
 
-            # Приветствие для нового пользователя (короткое)
+            # ПРИВЕТСТВИЕ (ВЕРСИЯ 1 – продающее)
             await message.answer(
-                "📖 **BinzoLife за 3 шага:**\n\n"
-                "1. Нажми «Найти заправку» → выбери топливо → получи АЗС с ценой, наличием и маршрутом.\n"
-                "2. В критической ситуации нажми «Бензин заканчивается!» — я найду топливо за 10 секунд.\n"
-                "3. Подключи PRO, чтобы получать уведомления о снижении цен и не упускать выгоду.\n\n"
-                "💰 Экономь до 500 ₽ за заправку. Начни сейчас → «Найти заправку».",
-                reply_markup=welcome_back_keyboard(),
+                "⛽ Добро пожаловать в BinzoLife!\n\n"
+                "Я — ваш персональный помощник по поиску самой выгодной цены на топливо. \n"
+                "Больше не нужно гадать, где дешевле — я покажу актуальные цены и наличие на АЗС в вашем городе.\n\n"
+                "🚀 Что вы получите:\n"
+                "• Мгновенный поиск лучшей цены на АИ‑95\n"
+                "• Информацию о наличии топлива (зелёный/жёлтый/красный)\n"
+                "• Карточку АЗС с адресом, расстоянием и маршрутом\n"
+                "• Возможность сообщать цены и получать репутацию\n\n"
+                "💎 PRO-подписка (99 ₽ / 150 Stars) даст вам:\n"
+                "• Уведомления о снижении цены на конкретной АЗС\n"
+                "• График изменения цен за 30 дней\n"
+                "• Безлимитный поиск\n"
+                "• Приоритетные уведомления\n\n"
+                "🎁 Прямо сейчас у вас есть 3 дня PRO бесплатно — активируются после первого поиска.\n\n"
+                "👉 Начните с выбора города:",
+                reply_markup=city_choice_keyboard(),
                 parse_mode="HTML"
             )
             return
@@ -137,3 +139,49 @@ async def process_start(message: types.Message, state: FSMContext):
             "📍 Для начала выбери свой город:",
             reply_markup=city_choice_keyboard()
         )
+
+# ---------- Обработчики выбора города ----------
+@router.callback_query(F.data == "city_list")
+async def city_list(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "📍 Выбери свой город из списка:",
+        reply_markup=popular_cities_keyboard()
+    )
+
+@router.callback_query(lambda c: c.data.startswith("city_select_"))
+async def city_select(callback: types.CallbackQuery):
+    city_name = callback.data.split("_")[2]
+    await callback.answer()
+
+    async with AsyncSessionLocal() as db:
+        city = await get_city_by_name(db, city_name)
+        if not city:
+            await callback.message.edit_text(
+                f"❌ Город '{city_name}' пока не добавлен в базу.\n"
+                "Пожалуйста, выберите другой город из списка.",
+                reply_markup=popular_cities_keyboard()
+            )
+            return
+
+        user = await get_user(db, callback.from_user.id)
+        if user:
+            user.city_id = city.id
+            await db.commit()
+
+    await callback.message.delete()
+    await callback.message.answer(
+        f"✅ Город {city_name} сохранён! Теперь я буду показывать цены именно для этого города.\n\n"
+        "Что делаем?",
+        reply_markup=welcome_back_keyboard()
+    )
+
+@router.callback_query(F.data == "search_now")
+async def search_now(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer(
+        "🚀 Для поиска заправки сначала выбери город.\n"
+        "Нажми /start, чтобы выбрать город.",
+        reply_markup=main_menu_keyboard()
+    )
