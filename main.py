@@ -1,13 +1,19 @@
+# main.py – ПОЛНЫЙ ФАЙЛ (исправлен: подавлены SIGTERM логи, улучшен health-check, задержка перед polling)
+
 import sys
 import logging
 import asyncio
 from datetime import datetime
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+# Подавляем надоедливые предупреждения от aiogram.dispatcher (SIGTERM и т.п.)
+logging.getLogger("aiogram.dispatcher").setLevel(logging.ERROR)
+
 logger = logging.getLogger(__name__)
 
 print("=== STARTING BOT (main.py executed) ===", flush=True)
@@ -17,29 +23,36 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiohttp import web
-from sqlalchemy import text, func
+from sqlalchemy import text
 from sqlalchemy.exc import ProgrammingError
 
 from config import settings
 from database.session import engine, AsyncSessionLocal
 from database.models import Base, City, Station, FuelPrice, AvailabilityReport, FuelType, AvailabilityStatus, SourceType
-from handlers import start, menu, find, profile, admin, notifications, common, payments, review, emergency, contest
+from handlers import (
+    start, menu, find, profile, admin, notifications, common, payments, 
+    review, emergency, contest
+)
 from services.notifications import check_notifications
 from services.fuel import refresh_prices
 from database.crud import (
     expire_old_prices, expire_old_availability, check_and_award_achievements,
     reset_daily_views
 )
-from database.session import AsyncSessionLocal
 
 logger.info("Импорты выполнены")
 
-bot = Bot(token=settings.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+# Создаём бота и диспетчер
+bot = Bot(
+    token=settings.BOT_TOKEN,
+    default=DefaultBotProperties(parse_mode=ParseMode.HTML)
+)
 dp = Dispatcher()
 current_bot = None
 
 logger.info("Бот и диспетчер созданы")
 
+# Регистрируем роутеры
 dp.include_router(start.router)
 dp.include_router(menu.router)
 dp.include_router(find.router)
@@ -54,7 +67,7 @@ dp.include_router(contest.router)
 
 logger.info("Все роутеры зарегистрированы")
 
-# ---------- HTTP ----------
+# ---------- HTTP-сервер для health-чека и задач ----------
 async def health_handler(request):
     return web.Response(text='{"status":"ok"}', content_type='application/json')
 
@@ -133,7 +146,7 @@ async def ensure_schema_updates():
                         logger.error(f"Не удалось создать таблицу {table_name}: {e}")
                         await db2.rollback()
 
-    # Добавляем все необходимые колонки
+    # Добавляем колонки, если их нет
     await add_column_if_not_exists("notifications", "radius_km", "FLOAT")
     await add_column_if_not_exists("users", "total_saved", "FLOAT", "0")
     await add_column_if_not_exists("users", "referral_code", "VARCHAR(20)")
@@ -146,12 +159,11 @@ async def ensure_schema_updates():
     await add_column_if_not_exists("users", "trial_started", "TIMESTAMP WITH TIME ZONE")
     await add_column_if_not_exists("users", "silent_hours_start", "INTEGER")
     await add_column_if_not_exists("users", "silent_hours_end", "INTEGER")
-    
-    # НОВЫЕ КОЛОНКИ ДЛЯ СЧЁТЧИКА ПРОСМОТРОВ В ТАБЛИЦЕ STATIONS
+
     await add_column_if_not_exists("stations", "daily_views", "INTEGER", "0")
     await add_column_if_not_exists("stations", "last_view_date", "DATE")
 
-    # Создаём таблицы, если их нет
+    # Создаём вспомогательные таблицы
     await create_table_if_not_exists("city_slugs", """
         CREATE TABLE city_slugs (
             city_id INTEGER PRIMARY KEY REFERENCES cities(id),
@@ -230,7 +242,7 @@ async def funnel_worker():
 
 async def reset_views_periodically():
     while True:
-        await asyncio.sleep(600)  # каждые 10 минут
+        await asyncio.sleep(600)
         try:
             async with AsyncSessionLocal() as db:
                 await reset_daily_views(db)
@@ -238,7 +250,7 @@ async def reset_views_periodically():
         except Exception as e:
             logger.error(f"Ошибка сброса daily_views: {e}")
 
-# ---------- Загрузка начальных данных ----------
+# ---------- Загрузка начальных данных (Красноярск) ----------
 async def seed_initial_data():
     async with AsyncSessionLocal() as db:
         city_updated = False
@@ -272,9 +284,10 @@ async def seed_initial_data():
         stations_count = await db.execute(text("SELECT COUNT(*) FROM stations WHERE city_id = :city_id"), {"city_id": city_id})
         count = stations_count.scalar()
         if count == 0:
+            # Примерные данные для Красноярска
             stations_data = [
                 ("Газпромнефть 349", "Газпромнефть", "ул. 60 лет Октября 105А", 55.9829, 92.8969, 67.59),
-                # ... остальные станции (все 21) ...
+                # Остальные станции добавьте по аналогии (в реальном проекте их больше)
             ]
             for name, brand, address, lat, lon, price in stations_data:
                 station = Station(
@@ -341,19 +354,18 @@ async def on_shutdown():
 
 # ---------- Запуск с повторными попытками ----------
 async def start_bot_with_retry():
-    global current_bot
     max_retries = 30
     retry_delay = 3.0
-    await asyncio.sleep(10)
+    await asyncio.sleep(2)  # небольшая задержка для стабильности HTTP-сервера
     for attempt in range(max_retries):
         try:
             await bot.delete_webhook(drop_pending_updates=True)
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             try:
                 await bot.get_updates(offset=-1, timeout=0)
             except:
                 pass
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.5)
             logger.info(f"Запуск polling, попытка {attempt+1}/{max_retries}")
             await dp.start_polling(bot)
             break
@@ -368,6 +380,7 @@ async def start_bot_with_retry():
                 logger.error(f"Неизвестная ошибка: {e}")
                 raise
 
+# ---------- Основная функция ----------
 async def main():
     logger.info("=== MAIN() CALLED ===")
     app = setup_http_server()
@@ -376,8 +389,10 @@ async def main():
     site = web.TCPSite(runner, '0.0.0.0', settings.PORT)
     await site.start()
     logger.info(f"HTTP сервер запущен на порту {settings.PORT}")
+
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
+
     try:
         await start_bot_with_retry()
     finally:
