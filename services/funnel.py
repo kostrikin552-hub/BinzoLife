@@ -13,35 +13,28 @@ bot = Bot(token=settings.BOT_TOKEN)
 
 FUNNEL_MESSAGES = {
     0: (
-        "👋 Привет! Ты уже установил город и можешь искать заправки.\n"
-        "Нажми «⛽ Найти заправку» и выбери топливо — я покажу лучшие варианты."
+        "👋 Вы искали АЗС, но не заправились. \n"
+        "Цены на топливо меняются каждый час. Возможно, сейчас цена стала ещё ниже.\n\n"
+        "Проверьте за 10 секунд: нажмите «Найти заправку» и убедитесь сами."
     ),
     1: (
-        "👋 Ну как тебе BinzoLife? Удалось сэкономить?\n\n"
-        "Если есть вопросы или пожелания — просто напиши мне. Я всегда на связи.\n\n"
-        "А пока можешь поискать заправку ещё раз — я покажу лучшие варианты."
+        "📊 За вчера вы могли сэкономить до 50 ₽, если бы заправились по самой низкой цене.\n"
+        "За месяц это уже 1 500 ₽ — неплохая экономия, правда?\n\n"
+        "С PRO вы будете получать уведомления о снижении цены и никогда не пропустите выгодное предложение.\n"
+        "Попробуйте 3 дня бесплатно — активируйте в меню PRO."
     ),
     2: (
-        "📊 Вчера 1 200 водителей в твоём городе нашли топливо без очередей.\n\n"
-        "Ты ещё не пользовался ботом сегодня? Нажми «Найти заправку» — я покажу актуальные цены."
+        "🔥 У нас новые данные: в вашем городе цена на топливо упала на 2 АЗС. \n"
+        "Вы уже проверили?\n\n"
+        "Кстати, вы использовали только несколько бесплатных поисков. \n"
+        "С PRO поиск безлимитный, и вы всегда будете знать, где самая низкая цена.\n\n"
+        "Станьте PRO сегодня и начните экономить прямо сейчас."
     ),
     3: (
-        "⚠️ Ты уже 3 раза искал заправку. Бесплатная выдача работает, но данные устаревают каждые 2 часа.\n\n"
-        "🔥 **Подключи PRO за 99 ₽** — и ты всегда будешь знать о появлении топлива и снижении цен.\n"
-        "Это окупится с первой заправки.\n\n"
-        "💰 **Ты теряешь до 500 ₽ на каждой заправке без уведомлений.**\n"
-        "Узнай, сколько ты уже потерял — нажми «💎 PRO» в меню."
-    ),
-    4: (
-        "🎁 Специально для тебя: напиши отзыв о боте (можно просто текст), и я начислю тебе **3 дня PRO бесплатно**!\n\n"
-        "Просто нажми «⭐ Оставить отзыв» в меню.\n\n"
-        "Твой отзыв помогает нам становиться лучше, а ты получаешь бонус."
-    ),
-    5: (
-        "Мы скучаем! Ты мог бы уже сэкономить до 2 000 ₽ на топливе, если бы использовал PRO.\n\n"
-        "Вернись и попробуй ещё раз. Нажми «Найти заправку» — я покажу, что изменилось.\n\n"
-        "**Последний шанс:** оформи PRO со скидкой 50% на первый месяц — промокод **SAVE50** (действует до конца недели).\n\n"
-        "До встречи в боте!"
+        "⏳ Ваш бесплатный пробный период (если был активирован) заканчивается.\n"
+        "Или вы ещё не пользовались триалом? \n"
+        "С PRO вы получите уведомления о снижении цены и сможете экономить до 500 ₽ за заправку.\n\n"
+        "Не упустите возможность — оформите подписку сейчас, пока цена 99 ₽."
     )
 }
 
@@ -53,44 +46,40 @@ async def send_funnel_message(user_id: int, text: str):
         logger.error(f"Ошибка отправки воронки пользователю {user_id}: {e}")
 
 async def process_funnel():
-    """Основная функция, вызываемая из фоновой задачи"""
     async with AsyncSessionLocal() as db:
         now = datetime.now(timezone.utc)
 
-        # Стадия 0
-        users_stage0 = await get_users_without_first_search(db)
+        # Стадия 0 – через 1 час после первого поиска
+        users_stage0 = await get_funnel_users(db, stage=0, days_after=0)
         for user in users_stage0:
-            if user.created_at and (now - user.created_at) > timedelta(hours=1):
-                if user.funnel_stage == 0 and (user.last_funnel_message_at is None or (now - user.last_funnel_message_at) > timedelta(hours=24)):
+            if user.first_search_at and (now - user.first_search_at) > timedelta(hours=1):
+                if user.last_funnel_message_at is None or (now - user.last_funnel_message_at) > timedelta(hours=24):
                     await send_funnel_message(user.telegram_id, FUNNEL_MESSAGES[0])
                     await advance_funnel_stage(db, user.id, 1)
 
-        # Стадия 1
+        # Стадия 1 – через 1 день
         users_stage1 = await get_funnel_users(db, stage=1, days_after=1)
         for user in users_stage1:
+            if user.is_pro:
+                await advance_funnel_stage(db, user.id, 4, message_sent=False)
+                continue
             await send_funnel_message(user.telegram_id, FUNNEL_MESSAGES[1])
             await advance_funnel_stage(db, user.id, 2)
 
-        # Стадия 2
+        # Стадия 2 – через 3 дня
         users_stage2 = await get_funnel_users(db, stage=2, days_after=3)
         for user in users_stage2:
+            if user.is_pro:
+                await advance_funnel_stage(db, user.id, 4, message_sent=False)
+                continue
             await send_funnel_message(user.telegram_id, FUNNEL_MESSAGES[2])
             await advance_funnel_stage(db, user.id, 3)
 
-        # Стадия 3
+        # Стадия 3 – через 7 дней
         users_stage3 = await get_funnel_users(db, stage=3, days_after=7)
         for user in users_stage3:
             if user.is_pro:
-                await advance_funnel_stage(db, user.id, 5, message_sent=False)
+                await advance_funnel_stage(db, user.id, 4, message_sent=False)
                 continue
             await send_funnel_message(user.telegram_id, FUNNEL_MESSAGES[3])
-            await advance_funnel_stage(db, user.id, 4)
-
-        # Стадия 4
-        users_stage4 = await get_funnel_users(db, stage=4, days_after=14)
-        for user in users_stage4:
-            if user.is_pro:
-                await advance_funnel_stage(db, user.id, 5, message_sent=False)
-                continue
-            await send_funnel_message(user.telegram_id, FUNNEL_MESSAGES[4])
-            await advance_funnel_stage(db, user.id, 5)
+            await advance_funnel_stage(db, user.id, 4)  # завершено
