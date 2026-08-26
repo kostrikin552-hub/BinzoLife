@@ -1,3 +1,5 @@
+# database/models.py – ПОЛНЫЙ ФАЙЛ (с добавленным ON DELETE CASCADE)
+
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
     Enum, Text, Index, func, Date
@@ -40,7 +42,7 @@ class City(Base):
 
 class CitySlug(Base):
     __tablename__ = "city_slugs"
-    city_id = Column(Integer, ForeignKey("cities.id"), primary_key=True)
+    city_id = Column(Integer, ForeignKey("cities.id", ondelete="CASCADE"), primary_key=True)
     slug = Column(String(50), nullable=False, unique=True)
     parser_source = Column(String(50), default="fuelprice")
     is_active = Column(Boolean, default=True)
@@ -49,7 +51,7 @@ class CitySlug(Base):
 class Station(Base):
     __tablename__ = "stations"
     id = Column(Integer, primary_key=True)
-    city_id = Column(Integer, ForeignKey("cities.id"), nullable=False)
+    city_id = Column(Integer, ForeignKey("cities.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(200), nullable=False)
     brand = Column(String(100))
     address = Column(String(300))
@@ -57,8 +59,6 @@ class Station(Base):
     longitude = Column(Float, nullable=False)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    
-    # НОВЫЕ ПОЛЯ ДЛЯ СЧЁТЧИКА ПРОСМОТРОВ
     daily_views = Column(Integer, default=0)
     last_view_date = Column(Date, nullable=True)
 
@@ -69,7 +69,7 @@ class Station(Base):
 class FuelPrice(Base):
     __tablename__ = "fuel_prices"
     id = Column(Integer, primary_key=True)
-    station_id = Column(Integer, ForeignKey("stations.id"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
     fuel_type = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     price = Column(Float, nullable=False)
     source = Column(Enum(SourceType, values_callable=lambda x: [e.value for e in x]), nullable=False)
@@ -86,12 +86,12 @@ class FuelPrice(Base):
 class AvailabilityReport(Base):
     __tablename__ = "availability_reports"
     id = Column(Integer, primary_key=True)
-    station_id = Column(Integer, ForeignKey("stations.id"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
     fuel_type = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     status = Column(Enum(AvailabilityStatus, values_callable=lambda x: [e.value for e in x]), nullable=False)
     source = Column(Enum(SourceType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     confidence = Column(Float, nullable=False, default=0.5)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
     recorded_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -105,7 +105,7 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(BigInteger, unique=True, nullable=False)
     username = Column(String(100))
-    city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
+    city_id = Column(Integer, ForeignKey("cities.id", ondelete="SET NULL"), nullable=True)
     default_fuel = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False, default=FuelType.AI_95.value)
     tank_volume = Column(Float, nullable=False, default=50.0)
     reputation = Column(Integer, nullable=False, default=0)
@@ -135,8 +135,8 @@ class User(Base):
 class Notification(Base):
     __tablename__ = "notifications"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    station_id = Column(Integer, ForeignKey("stations.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"), nullable=True)
     fuel_type = Column(Enum(FuelType, values_callable=lambda x: [e.value for e in x]), nullable=False)
     target_price = Column(Float, nullable=True)
     notify_on_availability = Column(Boolean, nullable=False, default=False)
@@ -152,9 +152,9 @@ class Notification(Base):
 class UserAction(Base):
     __tablename__ = "user_actions"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     action = Column(String(50), nullable=False)
-    station_id = Column(Integer, ForeignKey("stations.id"), nullable=True)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"), nullable=True)
     recorded_at = Column(DateTime(timezone=True), server_default=func.now())
 
     user = relationship("User")
@@ -162,7 +162,7 @@ class UserAction(Base):
 class Payment(Base):
     __tablename__ = "payments"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     telegram_payment_charge_id = Column(String(100), unique=True, nullable=False)
     provider_payment_charge_id = Column(String(100), nullable=True)
     amount = Column(Float, nullable=False)
@@ -177,7 +177,7 @@ class Payment(Base):
 class Review(Base):
     __tablename__ = "reviews"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     rating = Column(Integer, nullable=False)
     comment = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -187,7 +187,7 @@ class Review(Base):
 class UserAchievement(Base):
     __tablename__ = "user_achievements"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     achievement_type = Column(String(50), nullable=False)
     awarded_at = Column(DateTime(timezone=True), server_default=func.now())
     bonus_days_granted = Column(Integer, default=0)
@@ -197,8 +197,8 @@ class UserAchievement(Base):
 class Referral(Base):
     __tablename__ = "referrals"
     id = Column(Integer, primary_key=True)
-    referrer_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    referred_user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    referrer_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    referred_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     is_rewarded = Column(Boolean, default=False)
 
@@ -208,8 +208,8 @@ class Referral(Base):
 class UserEconomy(Base):
     __tablename__ = "user_economies"
     id = Column(Integer, primary_key=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    station_id = Column(Integer, ForeignKey("stations.id"), nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    station_id = Column(Integer, ForeignKey("stations.id", ondelete="CASCADE"), nullable=True)
     price_paid = Column(Float, nullable=False)
     city_avg_price = Column(Float, nullable=False)
     saved = Column(Float, nullable=False)
