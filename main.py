@@ -26,7 +26,10 @@ from database.models import Base, City, Station, FuelPrice, AvailabilityReport, 
 from handlers import start, menu, find, profile, admin, notifications, common, payments, review, emergency, contest
 from services.notifications import check_notifications
 from services.fuel import refresh_prices
-from database.crud import expire_old_prices, expire_old_availability, check_and_award_achievements
+from database.crud import (
+    expire_old_prices, expire_old_availability, check_and_award_achievements,
+    reset_daily_views  # <-- ДОБАВЛЕНО
+)
 from database.session import AsyncSessionLocal
 
 logger.info("Импорты выполнены")
@@ -139,8 +142,6 @@ async def ensure_schema_updates():
     await add_column_if_not_exists("users", "first_search_at", "TIMESTAMP WITH TIME ZONE")
     await add_column_if_not_exists("users", "funnel_stage", "INTEGER", "0")
     await add_column_if_not_exists("users", "last_funnel_message_at", "TIMESTAMP WITH TIME ZONE")
-    
-    # НОВЫЕ КОЛОНКИ ДЛЯ ТРИАЛА И ТИШИНЫ
     await add_column_if_not_exists("users", "trial_used", "BOOLEAN", "FALSE")
     await add_column_if_not_exists("users", "trial_started", "TIMESTAMP WITH TIME ZONE")
     await add_column_if_not_exists("users", "silent_hours_start", "INTEGER")
@@ -222,6 +223,17 @@ async def funnel_worker():
         except Exception as e:
             logger.error(f"Ошибка в funnel_worker: {e}")
         await asyncio.sleep(600)
+
+# НОВАЯ ЗАДАЧА: СБРОС ПРОСМОТРОВ
+async def reset_views_periodically():
+    while True:
+        await asyncio.sleep(600)  # каждые 10 минут
+        try:
+            async with AsyncSessionLocal() as db:
+                await reset_daily_views(db)
+            logger.info("Сброс daily_views выполнен")
+        except Exception as e:
+            logger.error(f"Ошибка сброса daily_views: {e}")
 
 # ---------- Загрузка начальных данных ----------
 async def seed_initial_data():
@@ -309,6 +321,7 @@ async def on_startup():
     asyncio.create_task(expire_old_data_periodically())
     asyncio.create_task(check_achievements_periodically())
     asyncio.create_task(funnel_worker())
+    asyncio.create_task(reset_views_periodically())  # <-- НОВАЯ ЗАДАЧА
     logger.info("Бот запущен, фоновые задачи активны")
     try:
         await bot.send_message(settings.ADMIN_ID, "✅ Бот успешно запущен и готов к работе!")
