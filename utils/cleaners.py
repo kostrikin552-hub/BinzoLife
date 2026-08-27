@@ -1,4 +1,4 @@
-# utils/cleaners.py – НОВЫЙ МОДУЛЬ ДЛЯ ОЧИСТКИ ДАННЫХ
+# utils/cleaners.py – ИСПРАВЛЕННАЯ ФУНКЦИЯ clean_address
 
 import re
 
@@ -6,15 +6,12 @@ def normalize_name(name: str) -> str:
     """Очищает название АЗС от цен, дат и лишней информации"""
     if not name:
         return ""
-    # Убираем все цены для разных видов топлива
     name = re.sub(r'\bАи-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bАИ-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bДТ\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bАи-100\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bПремиум\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    # Убираем даты (например, 2026-08-25)
     name = re.sub(r'\d{4}-\d{2}-\d{2}', '', name)
-    # Убираем лишние пробелы
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
@@ -22,17 +19,28 @@ def clean_address(addr: str, max_length: int = 255) -> str:
     """Очищает адрес от HTML-тегов, цен, дат и лишней информации"""
     if not addr:
         return ""
-    # Удаляем HTML-теги (все, что между < и >)
+    # Удаляем HTML-теги
     addr = re.sub(r'<[^>]+>', '', addr)
-    # Удаляем цены для всех видов топлива
-    addr = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'ДТ[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', addr, flags=re.I)
+    
+    # Удаляем цены для всех видов топлива с учётом пробелов после двоеточия
+    # Аи-92: 65.61 руб. ()  или  Аи-95: 71.99 руб. ()  или  ДТ: 80.69 руб. ()
+    addr = re.sub(r'Аи-[0-9]+\s*[:：]\s*[\d.]+\s*руб\.?\s*\([^)]*\)', '', addr, flags=re.I)
+    addr = re.sub(r'АИ-[0-9]+\s*[:：]\s*[\d.]+\s*руб\.?\s*\([^)]*\)', '', addr, flags=re.I)
+    addr = re.sub(r'ДТ\s*[:：]\s*[\d.]+\s*руб\.?\s*\([^)]*\)', '', addr, flags=re.I)
+    addr = re.sub(r'Премиум\s*[:：]\s*[\d.]+\s*руб\.?\s*\([^)]*\)', '', addr, flags=re.I)
+    
+    # Альтернативные форматы без "руб." или с "₽"
+    addr = re.sub(r'Аи-[0-9]+\s*[:：]\s*[\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'АИ-[0-9]+\s*[:：]\s*[\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'ДТ\s*[:：]\s*[\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'Премиум\s*[:：]\s*[\d.]+\s*₽', '', addr, flags=re.I)
+    
     # Удаляем даты
     addr = re.sub(r'\d{4}-\d{2}-\d{2}', '', addr)
+    
     # Убираем лишние пробелы
     addr = re.sub(r'\s+', ' ', addr).strip()
+    
     # Обрезаем до max_length
     if len(addr) > max_length:
         addr = addr[:max_length]
