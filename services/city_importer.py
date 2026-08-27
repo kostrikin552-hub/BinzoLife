@@ -1,5 +1,4 @@
-# services/city_importer.py – полная версия
-# При импорте обновляет название, адрес, координаты, цены
+# services/city_importer.py – ПОЛНЫЙ (с импортом cleaners)
 
 import logging
 import re
@@ -16,6 +15,7 @@ from database.crud import (
     get_or_create_city, get_stations_by_city, get_city_slug
 )
 from database.models import FuelType, SourceType
+from utils.cleaners import normalize_name, clean_address
 
 logger = logging.getLogger(__name__)
 
@@ -50,28 +50,6 @@ ADDRESS_KEYWORDS = [
     'пр-т', 'наб', 'набережная', 'вл', 'владение', 'д',
     'дом', 'корп', 'строение', 'проезд', 'пр-д', 'АЗС №'
 ]
-
-def normalize_name(name: str) -> str:
-    if not name:
-        return ""
-    name = re.sub(r'\bАи-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bАИ-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bДТ\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bАи-100\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\d{4}-\d{2}-\d{2}', '', name)
-    name = re.sub(r'\s+', ' ', name).strip()
-    return name
-
-def clean_address(text: str) -> str:
-    if not text:
-        return ""
-    text = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', text, flags=re.I)
-    text = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', text, flags=re.I)
-    text = re.sub(r'ДТ[:：][\d.]+\s*₽', '', text, flags=re.I)
-    text = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', text, flags=re.I)
-    text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
 
 def is_address(text: str) -> bool:
     if not text:
@@ -246,7 +224,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
                 clean_name = normalize_name(name)
                 clean_name = truncate_string(clean_name, 255)
-                clean_addr = truncate_string(clean_address(address), 255) if address else ""
+                clean_addr = clean_address(address, max_length=255) if address else ""
 
                 station = None
                 norm_name = clean_name.lower()
@@ -296,9 +274,11 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
         except IntegrityError as e:
             logger.debug(f"IntegrityError при обработке записи: {e}")
+            await db.rollback()
             continue
         except Exception as e:
             logger.error(f"Ошибка при обработке записи: {e}")
+            await db.rollback()
             continue
 
     return {
