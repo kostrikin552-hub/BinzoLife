@@ -1,3 +1,5 @@
+# services/city_importer.py – ИСПРАВЛЕНА (используется normalize_name для названия)
+
 import logging
 import re
 import asyncio
@@ -47,6 +49,21 @@ ADDRESS_KEYWORDS = [
     'пр-т', 'наб', 'набережная', 'вл', 'владение', 'д',
     'дом', 'корп', 'строение', 'проезд', 'пр-д', 'АЗС №'
 ]
+
+def normalize_name(name: str) -> str:
+    """Очищает название АЗС от цен, дат и лишней информации"""
+    if not name:
+        return ""
+    # Убираем все цены для разных видов топлива
+    name = re.sub(r'\bАи-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
+    name = re.sub(r'\bАИ-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
+    name = re.sub(r'\bДТ\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
+    name = re.sub(r'\bАи-100\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
+    # Убираем даты (например, 2026-08-25)
+    name = re.sub(r'\d{4}-\d{2}-\d{2}', '', name)
+    # Убираем лишние пробелы
+    name = re.sub(r'\s+', ' ', name).strip()
+    return name
 
 def truncate_string(value: str, max_length: int = 255) -> str:
     if not value:
@@ -226,7 +243,9 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 existing_names = {s.name.lower(): s for s in existing_stations}
                 existing_addresses = {s.address.lower(): s for s in existing_stations}
 
-                clean_name = truncate_string(name, 255)
+                # Очищаем название от лишней информации
+                clean_name = normalize_name(name)
+                clean_name = truncate_string(clean_name, 255)
                 clean_address = truncate_string(address, 255) if address else ""
 
                 station = None
@@ -253,9 +272,14 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     if norm_address:
                         existing_addresses[norm_address] = station
                 else:
+                    # Обновляем адрес, если он изменился
                     if clean_address and station.address != clean_address:
                         station.address = clean_address
                         updated_addresses += 1
+                    # Обновляем название, если оно изменилось (можно сделать, но обычно не нужно)
+                    if clean_name and station.name != clean_name:
+                        station.name = clean_name
+                        await db.commit()
 
                 await save_price(
                     db,
