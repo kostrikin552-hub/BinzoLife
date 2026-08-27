@@ -1,4 +1,4 @@
-# services/fuelprice_parser.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (обрезание адреса до 255 символов)
+# services/fuelprice_parser.py – ПОЛНЫЙ (с импортом cleaners)
 
 import aiohttp
 import asyncio
@@ -15,6 +15,7 @@ from database.crud import (
 )
 from database.models import FuelType, SourceType
 from utils.helpers import haversine_distance
+from utils.cleaners import normalize_name, clean_address, get_brand_from_name
 
 logger = logging.getLogger(__name__)
 
@@ -42,40 +43,6 @@ BRAND_KEYWORDS = [
     'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'Татнефть',
     'СКОН', 'Varta'
 ]
-
-def get_brand_from_name(name: str) -> str:
-    name_lower = name.lower()
-    for brand in ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'СКОН', 'Varta']:
-        if brand.lower() in name_lower:
-            return brand
-    return None
-
-def normalize_name(name: str) -> str:
-    if not name:
-        return ""
-    name = re.sub(r'\bАи-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bАИ-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bДТ\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\bАи-100\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    name = re.sub(r'\d{4}-\d{2}-\d{2}', '', name)
-    name = re.sub(r'\s+', ' ', name).strip()
-    return name
-
-def clean_address(addr: str, max_length: int = 255) -> str:
-    if not addr:
-        return ""
-    # Удаляем цены и даты
-    addr = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'ДТ[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', addr, flags=re.I)
-    addr = re.sub(r'\d{4}-\d{2}-\d{2}', '', addr)
-    # Убираем лишние пробелы
-    addr = re.sub(r'\s+', ' ', addr).strip()
-    # Обрезаем до max_length
-    if len(addr) > max_length:
-        addr = addr[:max_length]
-    return addr
 
 def is_valid_price(price: float) -> bool:
     return 30.0 <= price <= 200.0
@@ -135,7 +102,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             price_str = match[5] if len(match) > 5 else ''
 
                             clean_name = normalize_name(raw_name)
-                            # Очищаем адрес и обрезаем до 255 символов
                             clean_addr = clean_address(raw_address, max_length=255)
 
                             price = None
@@ -203,7 +169,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                         except Exception as e:
                             logger.error(f"Ошибка обработки: {e}")
-                            # Откатываем транзакцию, если произошла ошибка
                             try:
                                 await db.rollback()
                             except:
@@ -236,7 +201,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
-                                # Не обновляем координаты, если их нет
                                 await db.commit()
                                 await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
@@ -297,7 +261,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
             except Exception as e:
                 logger.error(f"Попытка {attempt+1} не удалась: {e}")
                 logger.error(traceback.format_exc())
-                # Откатываем транзакцию при ошибке
                 try:
                     await db.rollback()
                 except:
