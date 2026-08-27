@@ -1,4 +1,4 @@
-# services/fuelprice_parser.py – ПОЛНЫЙ (с импортом cleaners)
+# services/fuelprice_parser.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 import aiohttp
 import asyncio
@@ -145,7 +145,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
-                            # Обновляем всё
+                            # Обновляем всё, но только если адрес не пустой
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
                             if clean_addr and station.address != clean_addr:
