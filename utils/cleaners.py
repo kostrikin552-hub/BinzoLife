@@ -24,16 +24,13 @@ def clean_address(addr: str, max_length: int = 255) -> str:
     addr = re.sub(r'<[^>]+>', '', addr)
 
     # 2. Удаляем все блоки с ценами (в любом формате)
-    # Сначала удаляем полные блоки с "руб." или "₽" и скобками
     addr = re.sub(r'[А-Яа-я0-9\s]+?\s*[:：]\s*[\d.]+\s*руб\.?\s*\([^)]*\)\s*', '', addr, flags=re.I)
     addr = re.sub(r'[А-Яа-я0-9\s]+?\s*[:：]\s*[\d.]+\s*руб\.?\s*', '', addr, flags=re.I)
     addr = re.sub(r'[А-Яа-я0-9\s]+?\s*[:：]\s*[\d.]+\s*₽\s*', '', addr, flags=re.I)
-    # Удаляем отдельно стоящие числа с рублями
     addr = re.sub(r'\b[\d.]+\s*руб\.?', '', addr, flags=re.I)
     addr = re.sub(r'\b[\d.]+\s*₽', '', addr, flags=re.I)
 
     # 3. Удаляем оставшиеся "Аи-", "АИ-" и т.п., даже если после них нет цены
-    # Это ловит случаи типа "Аи-Аи-" или "Аи-"
     addr = re.sub(r'\bАи-[А-Яа-я0-9]*\s*', '', addr, flags=re.I)
     addr = re.sub(r'\bАИ-[А-Яа-я0-9]*\s*', '', addr, flags=re.I)
     addr = re.sub(r'\bДТ\s*', '', addr, flags=re.I)
@@ -47,7 +44,6 @@ def clean_address(addr: str, max_length: int = 255) -> str:
     addr = re.sub(r'^[·,\s]+', '', addr)
     addr = re.sub(r'[·,\s]+$', '', addr)
 
-    # Если осталась строка, начинающаяся с "·" или пустая – адреса нет
     if not addr or addr.startswith('·'):
         return ""
 
@@ -67,3 +63,29 @@ def get_brand_from_name(name: str) -> str:
 def is_valid_price(price: float) -> bool:
     """Проверяет, что цена находится в разумном диапазоне (30–200 руб.)"""
     return 30.0 <= price <= 200.0
+
+# ========== НОВАЯ ФУНКЦИЯ ==========
+ADDRESS_KEYWORDS = re.compile(
+    r'(ул\.|улица|пр\.|проспект|пер\.|переулок|ш\.|шоссе|бульвар|наб\.|набережная|пл\.|площадь|д\.|дом|корп|строение|владение|пос\.|поселок|город|г\.|деревня|д\.|с\.|село|квартал|микрорайон|мкр\.|жилой|комплекс)',
+    re.IGNORECASE
+)
+
+def is_likely_address(text: str) -> bool:
+    """
+    Проверяет, похож ли текст на реальный адрес.
+    Возвращает True, если текст выглядит как адрес, иначе False.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    text = text.strip()
+    if len(text) < 5:
+        return False
+    if not re.search(r'[А-Яа-яA-Za-z]', text):
+        return False
+    if ADDRESS_KEYWORDS.search(text):
+        return True
+    if re.search(r'\d', text) and re.search(r'[,.]', text):
+        return True
+    if re.match(r'^\d{6}', text):
+        return True
+    return False
