@@ -1,4 +1,5 @@
-# services/city_importer.py – ИСПРАВЛЕНА (используется normalize_name для названия)
+# services/city_importer.py – полная версия
+# При импорте обновляет название, адрес, координаты, цены
 
 import logging
 import re
@@ -51,31 +52,30 @@ ADDRESS_KEYWORDS = [
 ]
 
 def normalize_name(name: str) -> str:
-    """Очищает название АЗС от цен, дат и лишней информации"""
     if not name:
         return ""
-    # Убираем все цены для разных видов топлива
     name = re.sub(r'\bАи-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bАИ-9[258]\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bДТ\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
     name = re.sub(r'\bАи-100\s*[:：]\s*[\d.]+\s*₽', '', name, flags=re.I)
-    # Убираем даты (например, 2026-08-25)
     name = re.sub(r'\d{4}-\d{2}-\d{2}', '', name)
-    # Убираем лишние пробелы
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
-def truncate_string(value: str, max_length: int = 255) -> str:
-    if not value:
+def clean_address(text: str) -> str:
+    if not text:
         return ""
-    if len(value) > max_length:
-        return value[:max_length]
-    return value
+    text = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', text, flags=re.I)
+    text = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', text, flags=re.I)
+    text = re.sub(r'ДТ[:：][\d.]+\s*₽', '', text, flags=re.I)
+    text = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', text, flags=re.I)
+    text = re.sub(r'\d{4}-\d{2}-\d{2}', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
 def is_address(text: str) -> bool:
     if not text:
         return False
-    # Очищаем от HTML-тегов
     text = re.sub(r'<[^>]+>', '', text)
     for kw in ADDRESS_KEYWORDS:
         if kw in text.lower():
@@ -84,17 +84,12 @@ def is_address(text: str) -> bool:
         return True
     return False
 
-def clean_address(text: str) -> str:
-    if not text:
+def truncate_string(value: str, max_length: int = 255) -> str:
+    if not value:
         return ""
-    # Удаляем HTML-теги
-    text = re.sub(r'<[^>]+>', '', text)
-    # Удаляем лишние пробелы
-    text = re.sub(r'\s+', ' ', text).strip()
-    # Удаляем запятые в конце
-    text = re.sub(r',\s*$', '', text)
-    # Обрезаем до 255 символов
-    return text[:255]
+    if len(value) > max_length:
+        return value[:max_length]
+    return value
 
 async def fetch_html_with_retry(url: str, retries: int = 3, delay: float = 2.0) -> Optional[str]:
     headers = {
@@ -133,54 +128,59 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
                     return candidate.strip()
     return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
-def parse_stations_from_html(html: str) -> List[Tuple[str, str, float]]:
+def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, float]]:
     soup = BeautifulSoup(html, 'html.parser')
     stations = []
     current_name = None
     current_address = None
     current_price = None
+    current_lat = None
+    current_lon = None
 
     for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
         text = elem.get_text(strip=True)
         if not text:
             continue
 
-        # Удаляем HTML-теги для анализа
         clean_text = re.sub(r'<[^>]+>', '', text)
 
         is_brand = any(b in clean_text for b in BRAND_KEYWORDS)
         if is_brand and len(clean_text) < 150:
             if current_name and current_price is not None:
-                stations.append((current_name, current_address or "", current_price))
+                stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
             current_name = clean_text
             current_address = None
             current_price = None
+            current_lat = None
+            current_lon = None
             continue
 
         if current_name and not current_address:
             if is_address(clean_text):
-                current_address = clean_address(clean_text)
+                current_address = clean_text
                 continue
             if re.search(r'АЗС №|г\.|город|ул\.|шоссе|проезд|вл\.', clean_text, re.I):
-                current_address = clean_address(clean_text)
+                current_address = clean_text
                 continue
             if len(clean_text) < 200 and not re.search(r'\d+\.?\d*\s*₽', clean_text):
-                current_address = clean_address(clean_text)
+                current_address = clean_text
                 continue
 
         match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', clean_text)
         if match:
             try:
                 current_price = float(match.group(1).replace(',', '.'))
-                stations.append((current_name, current_address or "", current_price))
+                stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
                 current_name = None
                 current_address = None
                 current_price = None
+                current_lat = None
+                current_lon = None
             except ValueError:
                 pass
 
     if current_name and current_price is not None:
-        stations.append((current_name, current_address or "", current_price))
+        stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
 
     return stations
 
@@ -230,8 +230,9 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     created = 0
     updated_prices = 0
     updated_addresses = 0
+    updated_coords = 0
 
-    for name, address, price in station_data:
+    for name, address, price, lat, lon in station_data:
         try:
             async with AsyncSessionLocal() as db:
                 city = await get_city_by_id(db, city_id)
@@ -243,14 +244,13 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 existing_names = {s.name.lower(): s for s in existing_stations}
                 existing_addresses = {s.address.lower(): s for s in existing_stations}
 
-                # Очищаем название от лишней информации
                 clean_name = normalize_name(name)
                 clean_name = truncate_string(clean_name, 255)
-                clean_address = truncate_string(address, 255) if address else ""
+                clean_addr = truncate_string(clean_address(address), 255) if address else ""
 
                 station = None
                 norm_name = clean_name.lower()
-                norm_address = clean_address.lower() if clean_address else ''
+                norm_address = clean_addr.lower() if clean_addr else ''
 
                 if norm_name in existing_names:
                     station = existing_names[norm_name]
@@ -262,9 +262,9 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         db,
                         city_id=city.id,
                         name=clean_name,
-                        address=clean_address,
-                        lat=0.0,
-                        lon=0.0,
+                        address=clean_addr,
+                        lat=lat if lat != 0.0 else 0.0,
+                        lon=lon if lon != 0.0 else 0.0,
                         brand=None
                     )
                     created += 1
@@ -272,14 +272,16 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     if norm_address:
                         existing_addresses[norm_address] = station
                 else:
-                    # Обновляем адрес, если он изменился
-                    if clean_address and station.address != clean_address:
-                        station.address = clean_address
-                        updated_addresses += 1
-                    # Обновляем название, если оно изменилось (можно сделать, но обычно не нужно)
                     if clean_name and station.name != clean_name:
                         station.name = clean_name
-                        await db.commit()
+                    if clean_addr and station.address != clean_addr:
+                        station.address = clean_addr
+                        updated_addresses += 1
+                    if lat != 0.0 and lon != 0.0 and (station.latitude != lat or station.longitude != lon):
+                        station.latitude = lat
+                        station.longitude = lon
+                        updated_coords += 1
+                    await db.commit()
 
                 await save_price(
                     db,
@@ -304,5 +306,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         "slug": slug,
         "stations_created": created,
         "prices_updated": updated_prices,
-        "addresses_updated": updated_addresses
+        "addresses_updated": updated_addresses,
+        "coords_updated": updated_coords
     }
