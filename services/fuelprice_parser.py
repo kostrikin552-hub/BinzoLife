@@ -1,5 +1,3 @@
-# services/fuelprice_parser.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
-
 import aiohttp
 import asyncio
 import logging
@@ -15,7 +13,7 @@ from database.crud import (
 )
 from database.models import FuelType, SourceType
 from utils.helpers import haversine_distance
-from utils.cleaners import normalize_name, clean_address, get_brand_from_name
+from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +41,6 @@ BRAND_KEYWORDS = [
     'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'Татнефть',
     'СКОН', 'Varta'
 ]
-
-def is_valid_price(price: float) -> bool:
-    return 30.0 <= price <= 200.0
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
@@ -92,6 +87,8 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                 if matches:
                     logger.info(f"Найдены JS-массивы для {city_name}")
                     updated_count = 0
+                    # Накапливаем обновления для коммита
+                    updates = []
                     for match in matches:
                         try:
                             lat = float(match[0])
@@ -114,10 +111,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     price = float(price_str.replace(',', '.'))
                                 except:
                                     pass
-                            if not price:
-                                continue
-                            if not is_valid_price(price):
-                                logger.debug(f"Цена {price} аномальна для {raw_name}, пропускаем")
+                            if not price or not is_valid_price(price):
                                 continue
 
                             # Ищем станцию
@@ -145,7 +139,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
-                            # Обновляем всё, но только если адрес не пустой
+                            # Обновляем поля
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
                             if clean_addr and station.address != clean_addr:
@@ -153,8 +147,17 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             if lat != 0.0 and lon != 0.0:
                                 station.latitude = lat
                                 station.longitude = lon
-                            await db.commit()
+                            updates.append((station, price))
+                            updated_count += 1
+                            logger.info(f"Обновлено: {station.name}, цена {price} ₽, координаты {lat},{lon}")
 
+                        except Exception as e:
+                            logger.error(f"Ошибка обработки блока: {e}")
+                            continue
+
+                    # Один коммит для всех обновлений
+                    if updates:
+                        for station, price in updates:
                             await save_price(
                                 db,
                                 station.id,
@@ -164,16 +167,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 confidence=0.7,
                                 recorded_at=datetime.now(timezone.utc)
                             )
-                            updated_count += 1
-                            logger.info(f"Обновлено: {station.name}, цена {price} ₽, координаты {lat},{lon}")
-
-                        except Exception as e:
-                            logger.error(f"Ошибка обработки: {e}")
-                            try:
-                                await db.rollback()
-                            except:
-                                pass
-                            continue
+                        await db.commit()
                     logger.info(f"Обновлено {updated_count} станций в {city_name}")
                     return
 
@@ -201,7 +195,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
-                                await db.commit()
+                                # Сохраняем цену
                                 await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
                                 logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
@@ -229,7 +223,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                             station.name = clean_name
                                         if clean_addr and station.address != clean_addr:
                                             station.address = clean_addr
-                                        await db.commit()
                                         await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                         updated_count += 1
                                         logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
@@ -248,11 +241,12 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             station.name = clean_name
                         if clean_addr and station.address != clean_addr:
                             station.address = clean_addr
-                        await db.commit()
                         await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                         updated_count += 1
                         logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
 
+                if updated_count:
+                    await db.commit()
                 logger.info(f"Обновлено {updated_count} станций в {city_name} (BS4)")
                 return
 
@@ -261,10 +255,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
             except Exception as e:
                 logger.error(f"Попытка {attempt+1} не удалась: {e}")
                 logger.error(traceback.format_exc())
-                try:
-                    await db.rollback()
-                except:
-                    pass
+                await db.rollback()
 
             if attempt < retries:
                 delay = 5 * (attempt + 1)
