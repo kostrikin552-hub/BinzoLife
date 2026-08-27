@@ -1,3 +1,5 @@
+# services/city_importer.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (без конфликтов транзакций)
+
 import logging
 import re
 import asyncio
@@ -6,13 +8,14 @@ from typing import Dict, Any, Optional, List, Tuple
 import aiohttp
 from bs4 import BeautifulSoup
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
     get_or_create_city, get_stations_by_city, get_city_slug
 )
-from database.models import FuelType, SourceType
+from database.models import FuelType, SourceType, Station
 from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
@@ -134,7 +137,6 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
         is_brand = any(b in clean_text for b in BRAND_KEYWORDS)
         if is_brand and len(clean_text) < 150:
             if current_name and current_price is not None:
-                # Попытка найти координаты по имени
                 lat, lon = coords_map.get(current_name, (None, None))
                 stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
             current_name = clean_text
@@ -193,11 +195,15 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     if not station_data:
         return {"error": "Не удалось найти АЗС на странице"}
 
+    # Используем одну сессию и управляем транзакцией вручную
     async with AsyncSessionLocal() as db:
-        # Вся работа с БД в одной транзакции
-        async with db.begin():
+        try:
+            # Начинаем транзакцию явно
+            await db.begin()
+
             city = await get_or_create_city(db, city_name)
             if not city:
+                await db.rollback()
                 return {"error": f"Не удалось создать город {city_name}"}
 
             existing_slug = await get_city_slug(db, city_name)
@@ -215,9 +221,12 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             logger.info(f"Слаг {alt_slug} установлен для города {city_name} (альтернативный)")
                         except IntegrityError:
                             logger.error(f"Не удалось установить слаг для {city_name}")
+                            await db.rollback()
+                            return {"error": f"Не удалось установить слаг для {city_name}"}
 
             city_id = city.id
-            # Собираем существующие станции для быстрого поиска
+
+            # Получаем существующие станции
             existing_stations = await get_stations_by_city(db, city_id)
             existing_names = {s.name.lower(): s for s in existing_stations}
             existing_addresses = {s.address.lower(): s for s in existing_stations if s.address}
@@ -248,15 +257,18 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
                     if not station:
                         brand = get_brand_from_name(clean_name)
-                        station = await create_station(
-                            db,
+                        station = Station(
                             city_id=city_id,
                             name=clean_name,
                             address=clean_addr,
-                            lat=lat if lat != 0.0 else 0.0,
-                            lon=lon if lon != 0.0 else 0.0,
-                            brand=brand
+                            latitude=lat if lat != 0.0 else 0.0,
+                            longitude=lon if lon != 0.0 else 0.0,
+                            brand=brand,
+                            is_active=True
                         )
+                        db.add(station)
+                        # flush нужен, чтобы получить ID станции для сохранения цены
+                        await db.flush()
                         created += 1
                         existing_names[norm_name] = station
                         if norm_address:
@@ -272,29 +284,38 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             station.longitude = lon
                             updated_coords += 1
 
-                    await save_price(
-                        db,
-                        station.id,
-                        FuelType.AI_95,
-                        price,
-                        SourceType.PARSER,
+                    # Сохраняем цену
+                    price_entry = FuelPrice(
+                        station_id=station.id,
+                        fuel_type=FuelType.AI_95,
+                        price=price,
+                        source=SourceType.PARSER,
                         confidence=0.7,
-                        recorded_at=datetime.now(timezone.utc)
+                        recorded_at=datetime.now(timezone.utc),
+                        is_fresh=True
                     )
+                    db.add(price_entry)
                     updated_prices += 1
 
                 except Exception as e:
+                    # Если одна запись не обработалась, откатываем всю транзакцию
                     logger.error(f"Ошибка при обработке записи {name}: {e}")
-                    # Откат всей транзакции при любой ошибке
-                    raise
+                    await db.rollback()
+                    return {"error": f"Ошибка при обработке записи {name}: {e}"}
 
+            # Если всё успешно — коммитим
             await db.commit()
 
-    return {
-        "city": city_name,
-        "slug": slug,
-        "stations_created": created,
-        "prices_updated": updated_prices,
-        "addresses_updated": updated_addresses,
-        "coords_updated": updated_coords
-    }
+            return {
+                "city": city_name,
+                "slug": slug,
+                "stations_created": created,
+                "prices_updated": updated_prices,
+                "addresses_updated": updated_addresses,
+                "coords_updated": updated_coords
+            }
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка при импорте {city_name}: {e}")
+            await db.rollback()
+            return {"error": str(e)}
