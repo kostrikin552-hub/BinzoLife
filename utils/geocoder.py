@@ -5,47 +5,26 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Яндекс (требуется ключ)
-YANDEX_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
-
-# Nominatim (бесплатный, без ключа)
-NOMINATIM_URL = "https://nominatim.openstreetmap.org/search?q={}&format=json&limit=1"
+YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
+NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&zoom=18&addressdetails=1"
 NOMINATIM_HEADERS = {"User-Agent": "BinzoLifeBot/1.0"}
-
 
 async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
     """
-    Геокодирование адреса.
-    Сначала пытается через Яндекс.Геокодер (если есть ключ).
-    При ошибке 403 или отсутствии ключа — использует Nominatim.
+    Прямое геокодирование: адрес → координаты.
+    Использует Яндекс.Геокодер (требуется API-ключ).
     """
-    # 1. Попытка через Яндекс
     api_key = settings.YANDEX_GEOCODER_API_KEY
-    if api_key:
-        try:
-            coords = await _geocode_yandex(address, api_key)
-            if coords:
-                return coords
-            logger.warning("Яндекс не вернул координаты, пробуем Nominatim")
-        except Exception as e:
-            logger.error(f"Яндекс геокодер упал: {e}, пробуем Nominatim")
-    else:
-        logger.info("Ключ Яндекса не задан, используем Nominatim")
+    if not api_key:
+        logger.warning("Yandex Geocoder API key не настроен")
+        return None
 
-    # 2. Резерв — Nominatim
-    return await _geocode_nominatim(address)
-
-
-async def _geocode_yandex(address: str, api_key: str) -> Optional[Tuple[float, float]]:
-    url = YANDEX_URL.format(api_key, address.replace(" ", "+"))
+    url = YANDEX_GEOCODER_URL.format(api_key, address.replace(" ", "+"))
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url, timeout=10) as resp:
                 if resp.status != 200:
-                    logger.error(f"Яндекс вернул статус {resp.status}")
-                    # Если 403 — ключ невалидный, переходим к Nominatim
-                    if resp.status == 403:
-                        logger.warning("Ключ Яндекса не авторизован (403), используем Nominatim")
+                    logger.error(f"Геокодер вернул статус {resp.status}")
                     return None
                 data = await resp.json()
                 geo_objects = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
@@ -57,24 +36,51 @@ async def _geocode_yandex(address: str, api_key: str) -> Optional[Tuple[float, f
                 lon, lat = map(float, coords_str.split())
                 return lat, lon
     except Exception as e:
-        logger.error(f"Ошибка запроса к Яндекс: {e}")
+        logger.error(f"Ошибка геокодирования: {e}")
         return None
 
+async def reverse_geocode(lat: float, lon: float) -> Optional[str]:
+    """
+    Обратное геокодирование: координаты → адрес.
+    Сначала пытается через Nominatim (бесплатно, без ключа).
+    Если не получается, пробует Яндекс.Геокодер (если ключ задан).
+    """
+    if lat == 0.0 and lon == 0.0:
+        return None
 
-async def _geocode_nominatim(address: str) -> Optional[Tuple[float, float]]:
-    url = NOMINATIM_URL.format(address.replace(" ", "+"))
+    # 1. Пробуем Nominatim (бесплатно, но с ограничением 1 запрос/сек)
     try:
+        url = NOMINATIM_REVERSE_URL.format(lat, lon)
         async with aiohttp.ClientSession() as session:
             async with session.get(url, headers=NOMINATIM_HEADERS, timeout=10) as resp:
-                if resp.status != 200:
-                    logger.error(f"Nominatim вернул статус {resp.status}")
-                    return None
-                data = await resp.json()
-                if not data:
-                    return None
-                lat = float(data[0]["lat"])
-                lon = float(data[0]["lon"])
-                return lat, lon
+                if resp.status == 200:
+                    data = await resp.json()
+                    if "display_name" in data:
+                        address = data.get("display_name", "")
+                        # Сокращаем адрес (убираем страну и лишние детали)
+                        parts = address.split(", ")
+                        if len(parts) > 3:
+                            # Берём первые 3 части (улица, район, город) – обычно этого достаточно
+                            short_addr = ", ".join(parts[:3])
+                            return short_addr
+                        return address
     except Exception as e:
-        logger.error(f"Ошибка запроса к Nominatim: {e}")
-        return None
+        logger.warning(f"Ошибка обратного геокодирования (Nominatim): {e}")
+
+    # 2. Если Nominatim не сработал и есть Яндекс-ключ – пробуем Яндекс
+    if settings.YANDEX_GEOCODER_API_KEY:
+        try:
+            yandex_url = f"https://geocode-maps.yandex.ru/1.x/?apikey={settings.YANDEX_GEOCODER_API_KEY}&geocode={lon},{lat}&format=json"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(yandex_url, timeout=10) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        geo_objects = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
+                        if geo_objects:
+                            addr = geo_objects[0].get("GeoObject", {}).get("metaDataProperty", {}).get("GeocoderMetaData", {}).get("text", "")
+                            if addr:
+                                return addr
+        except Exception as e:
+            logger.warning(f"Ошибка обратного геокодирования (Яндекс): {e}")
+
+    return None
