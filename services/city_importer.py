@@ -1,4 +1,4 @@
-# services/city_importer.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (без конфликтов транзакций)
+# services/city_importer.py – ИСПРАВЛЕННЫЙ (добавлен импорт FuelPrice)
 
 import logging
 import re
@@ -15,7 +15,7 @@ from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
     get_or_create_city, get_stations_by_city, get_city_slug
 )
-from database.models import FuelType, SourceType, Station
+from database.models import FuelType, SourceType, FuelPrice  # <-- ДОБАВЛЕН IMPELEMENT
 from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
@@ -284,7 +284,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             station.longitude = lon
                             updated_coords += 1
 
-                    # Сохраняем цену
+                    # Сохраняем цену напрямую, используя модель FuelPrice
                     price_entry = FuelPrice(
                         station_id=station.id,
                         fuel_type=FuelType.AI_95,
