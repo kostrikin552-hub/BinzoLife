@@ -1,5 +1,4 @@
-# services/fuelprice_parser.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
-# Добавлена функция get_brand_from_name, фильтр цен, обновление адреса и координат
+# services/fuelprice_parser.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (обрезание адреса до 255 символов)
 
 import aiohttp
 import asyncio
@@ -44,7 +43,6 @@ BRAND_KEYWORDS = [
     'СКОН', 'Varta'
 ]
 
-# ИСПРАВЛЕНО: добавлена функция
 def get_brand_from_name(name: str) -> str:
     name_lower = name.lower()
     for brand in ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'СКОН', 'Varta']:
@@ -63,15 +61,20 @@ def normalize_name(name: str) -> str:
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
-def clean_address(addr: str) -> str:
+def clean_address(addr: str, max_length: int = 255) -> str:
     if not addr:
         return ""
+    # Удаляем цены и даты
     addr = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
     addr = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
     addr = re.sub(r'ДТ[:：][\d.]+\s*₽', '', addr, flags=re.I)
     addr = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', addr, flags=re.I)
     addr = re.sub(r'\d{4}-\d{2}-\d{2}', '', addr)
+    # Убираем лишние пробелы
     addr = re.sub(r'\s+', ' ', addr).strip()
+    # Обрезаем до max_length
+    if len(addr) > max_length:
+        addr = addr[:max_length]
     return addr
 
 def is_valid_price(price: float) -> bool:
@@ -132,7 +135,8 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             price_str = match[5] if len(match) > 5 else ''
 
                             clean_name = normalize_name(raw_name)
-                            clean_addr = clean_address(raw_address)
+                            # Очищаем адрес и обрезаем до 255 символов
+                            clean_addr = clean_address(raw_address, max_length=255)
 
                             price = None
                             if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
@@ -199,6 +203,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                         except Exception as e:
                             logger.error(f"Ошибка обработки: {e}")
+                            # Откатываем транзакцию, если произошла ошибка
+                            try:
+                                await db.rollback()
+                            except:
+                                pass
                             continue
                     logger.info(f"Обновлено {updated_count} станций в {city_name}")
                     return
@@ -222,14 +231,12 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
                                 clean_name = normalize_name(current_name)
-                                clean_addr = clean_address(current_address) if current_address else ""
+                                clean_addr = clean_address(current_address, max_length=255) if current_address else ""
                                 if clean_name and station.name != clean_name:
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
-                                if station.latitude == 0.0 and station.longitude == 0.0:
-                                    # если координаты отсутствуют, оставляем как есть
-                                    pass
+                                # Не обновляем координаты, если их нет
                                 await db.commit()
                                 await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
@@ -253,7 +260,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station = await find_station(db, stations, current_name, current_address, None, None)
                                     if station:
                                         clean_name = normalize_name(current_name)
-                                        clean_addr = clean_address(current_address) if current_address else ""
+                                        clean_addr = clean_address(current_address, max_length=255) if current_address else ""
                                         if clean_name and station.name != clean_name:
                                             station.name = clean_name
                                         if clean_addr and station.address != clean_addr:
@@ -272,7 +279,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                     station = await find_station(db, stations, current_name, current_address, None, None)
                     if station:
                         clean_name = normalize_name(current_name)
-                        clean_addr = clean_address(current_address) if current_address else ""
+                        clean_addr = clean_address(current_address, max_length=255) if current_address else ""
                         if clean_name and station.name != clean_name:
                             station.name = clean_name
                         if clean_addr and station.address != clean_addr:
@@ -290,6 +297,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
             except Exception as e:
                 logger.error(f"Попытка {attempt+1} не удалась: {e}")
                 logger.error(traceback.format_exc())
+                # Откатываем транзакцию при ошибке
+                try:
+                    await db.rollback()
+                except:
+                    pass
 
             if attempt < retries:
                 delay = 5 * (attempt + 1)
@@ -312,7 +324,7 @@ async def find_station(db, stations, name: str, address: str, lat: float = None,
             return s
 
     if address:
-        clean_addr = clean_address(address)
+        clean_addr = clean_address(address, max_length=255)
         for s in stations:
             if s.address and clean_addr.lower() in s.address.lower():
                 return s
