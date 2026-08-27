@@ -1,8 +1,8 @@
-# database/models.py – ПОЛНЫЙ ФАЙЛ (с добавленным ON DELETE CASCADE)
+# database/models.py – ПОЛНЫЙ (добавлена модель GeocodeCache)
 
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Float, DateTime, Boolean, ForeignKey,
-    Enum, Text, Index, func, Date
+    Enum, Text, Index, func, Date, UniqueConstraint
 )
 from sqlalchemy.orm import declarative_base, relationship
 import enum
@@ -217,3 +217,14 @@ class UserEconomy(Base):
 
     user = relationship("User", back_populates="economies")
     station = relationship("Station")
+
+# ========== НОВАЯ МОДЕЛЬ ДЛЯ КЕША ГЕОКОДЕРА ==========
+class GeocodeCache(Base):
+    __tablename__ = 'geocode_cache'
+    id = Column(Integer, primary_key=True)
+    lat = Column(Float, nullable=False)
+    lng = Column(Float, nullable=False)
+    address = Column(String(500), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    __table_args__ = (UniqueConstraint('lat', 'lng', name='uq_lat_lng'),)
