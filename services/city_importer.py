@@ -1,4 +1,4 @@
-# services/city_importer.py – ПОЛНЫЙ (с импортом cleaners)
+# services/city_importer.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 
 import logging
 import re
