@@ -1,5 +1,5 @@
-# services/fuelprice_parser.py – полная версия
-# При каждом парсинге обновляет название, адрес, координаты, цену
+# services/fuelprice_parser.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+# Добавлена функция get_brand_from_name, фильтр цен, обновление адреса и координат
 
 import aiohttp
 import asyncio
@@ -44,6 +44,14 @@ BRAND_KEYWORDS = [
     'СКОН', 'Varta'
 ]
 
+# ИСПРАВЛЕНО: добавлена функция
+def get_brand_from_name(name: str) -> str:
+    name_lower = name.lower()
+    for brand in ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'СКОН', 'Varta']:
+        if brand.lower() in name_lower:
+            return brand
+    return None
+
 def normalize_name(name: str) -> str:
     if not name:
         return ""
@@ -65,6 +73,9 @@ def clean_address(addr: str) -> str:
     addr = re.sub(r'\d{4}-\d{2}-\d{2}', '', addr)
     addr = re.sub(r'\s+', ' ', addr).strip()
     return addr
+
+def is_valid_price(price: float) -> bool:
+    return 30.0 <= price <= 200.0
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
@@ -135,6 +146,9 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     pass
                             if not price:
                                 continue
+                            if not is_valid_price(price):
+                                logger.debug(f"Цена {price} аномальна для {raw_name}, пропускаем")
+                                continue
 
                             # Ищем станцию
                             station = None
@@ -161,7 +175,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
-                            # ОБНОВЛЯЕМ ВСЁ
+                            # Обновляем всё
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
                             if clean_addr and station.address != clean_addr:
@@ -204,7 +218,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     is_brand = any(b in text for b in BRAND_KEYWORDS)
                     if is_brand and len(text) < 150:
-                        if current_name and current_price is not None:
+                        if current_name and current_price is not None and is_valid_price(current_price):
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
                                 clean_name = normalize_name(current_name)
@@ -213,6 +227,9 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
+                                if station.latitude == 0.0 and station.longitude == 0.0:
+                                    # если координаты отсутствуют, оставляем как есть
+                                    pass
                                 await db.commit()
                                 await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
@@ -232,25 +249,26 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         if match:
                             try:
                                 current_price = float(match.group(1).replace(',', '.'))
-                                station = await find_station(db, stations, current_name, current_address, None, None)
-                                if station:
-                                    clean_name = normalize_name(current_name)
-                                    clean_addr = clean_address(current_address) if current_address else ""
-                                    if clean_name and station.name != clean_name:
-                                        station.name = clean_name
-                                    if clean_addr and station.address != clean_addr:
-                                        station.address = clean_addr
-                                    await db.commit()
-                                    await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
-                                    updated_count += 1
-                                    logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
+                                if is_valid_price(current_price):
+                                    station = await find_station(db, stations, current_name, current_address, None, None)
+                                    if station:
+                                        clean_name = normalize_name(current_name)
+                                        clean_addr = clean_address(current_address) if current_address else ""
+                                        if clean_name and station.name != clean_name:
+                                            station.name = clean_name
+                                        if clean_addr and station.address != clean_addr:
+                                            station.address = clean_addr
+                                        await db.commit()
+                                        await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
+                                        updated_count += 1
+                                        logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
                                 current_name = None
                                 current_address = None
                                 current_price = None
                             except ValueError:
                                 pass
 
-                if current_name and current_price is not None:
+                if current_name and current_price is not None and is_valid_price(current_price):
                     station = await find_station(db, stations, current_name, current_address, None, None)
                     if station:
                         clean_name = normalize_name(current_name)
