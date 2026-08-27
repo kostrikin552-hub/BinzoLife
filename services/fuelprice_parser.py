@@ -1,4 +1,5 @@
-# services/fuelprice_parser.py – ИСПРАВЛЕНА (используется normalize_name для названия)
+# services/fuelprice_parser.py – полная версия
+# При каждом парсинге обновляет название, адрес, координаты, цену
 
 import aiohttp
 import asyncio
@@ -54,12 +55,16 @@ def normalize_name(name: str) -> str:
     name = re.sub(r'\s+', ' ', name).strip()
     return name
 
-def get_brand_from_name(name: str) -> str:
-    name_lower = name.lower()
-    for brand in ['Лукойл', 'Газпромнефть', 'КрасноярскНП', 'Кит', 'ОПТИ', 'Роснефть', 'ТНК', 'Shell', 'BP', 'Tatneft', 'СКОН', 'Varta']:
-        if brand.lower() in name_lower:
-            return brand
-    return None
+def clean_address(addr: str) -> str:
+    if not addr:
+        return ""
+    addr = re.sub(r'Аи-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'АИ-[0-9]+[:：][\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'ДТ[:：][\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'Премиум[0-9]*[:：][\d.]+\s*₽', '', addr, flags=re.I)
+    addr = re.sub(r'\d{4}-\d{2}-\d{2}', '', addr)
+    addr = re.sub(r'\s+', ' ', addr).strip()
+    return addr
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
@@ -100,11 +105,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
-                # ---- Сначала пытаемся найти JS-массивы (для Красноярска) ----
+                # ---- JS-массивы (основной метод) ----
                 pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
                 matches = pattern.findall(html)
                 if matches:
-                    logger.info(f"Найдены JS-массивы для {city_name}, используем старый метод")
+                    logger.info(f"Найдены JS-массивы для {city_name}")
                     updated_count = 0
                     for match in matches:
                         try:
@@ -112,13 +117,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             lon = float(match[1])
                             raw_name = match[2].strip()
                             raw_address = match[3].strip()
-                            if '<' in raw_address or '>' in raw_address or len(raw_address) > 200:
-                                raw_address = None
                             fuel_data = match[4] if len(match) > 4 else ''
                             price_str = match[5] if len(match) > 5 else ''
 
-                            # Очищаем название от цен и дат
                             clean_name = normalize_name(raw_name)
+                            clean_addr = clean_address(raw_address)
 
                             price = None
                             if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
@@ -133,6 +136,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             if not price:
                                 continue
 
+                            # Ищем станцию
                             station = None
                             for s in stations:
                                 dist = haversine_distance(lat, lon, s.latitude, s.longitude)
@@ -153,16 +157,18 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                         if s.brand and s.brand.lower() == brand.lower():
                                             station = s
                                             break
-
                             if not station:
-                                logger.debug(f"Не найдена станция для '{raw_name}' (коорд. {lat},{lon}) — пропускаем")
+                                logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
-                            # Обновляем название и адрес, если они изменились
+                            # ОБНОВЛЯЕМ ВСЁ
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
-                            if raw_address and station.address != raw_address:
-                                station.address = raw_address
+                            if clean_addr and station.address != clean_addr:
+                                station.address = clean_addr
+                            if lat != 0.0 and lon != 0.0:
+                                station.latitude = lat
+                                station.longitude = lon
                             await db.commit()
 
                             await save_price(
@@ -175,16 +181,16 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 recorded_at=datetime.now(timezone.utc)
                             )
                             updated_count += 1
-                            logger.info(f"Обновлена цена для {station.name}: {price} ₽")
+                            logger.info(f"Обновлено: {station.name}, цена {price} ₽, координаты {lat},{lon}")
 
                         except Exception as e:
-                            logger.error(f"Ошибка обработки блока: {e}")
+                            logger.error(f"Ошибка обработки: {e}")
                             continue
                     logger.info(f"Обновлено {updated_count} станций в {city_name}")
                     return
 
-                # ---- Если массивов нет — парсим HTML (BeautifulSoup) ----
-                logger.info(f"JS-массивы не найдены для {city_name}, используем BeautifulSoup")
+                # ---- Fallback: BeautifulSoup ----
+                logger.info(f"JS-массивы не найдены, используем BeautifulSoup")
                 soup = BeautifulSoup(html, 'html.parser')
                 updated_count = 0
                 current_name = None
@@ -201,23 +207,16 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         if current_name and current_price is not None:
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
-                                if current_address and station.address != current_address:
-                                    station.address = current_address
                                 clean_name = normalize_name(current_name)
+                                clean_addr = clean_address(current_address) if current_address else ""
                                 if clean_name and station.name != clean_name:
                                     station.name = clean_name
+                                if clean_addr and station.address != clean_addr:
+                                    station.address = clean_addr
                                 await db.commit()
-                                await save_price(
-                                    db,
-                                    station.id,
-                                    FuelType.AI_95,
-                                    current_price,
-                                    SourceType.PARSER,
-                                    confidence=0.7,
-                                    recorded_at=datetime.now(timezone.utc)
-                                )
+                                await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
-                                logger.info(f"Обновлена цена для {station.name}: {current_price} ₽")
+                                logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
                         current_name = text
                         current_address = None
                         current_price = None
@@ -225,9 +224,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     if current_name and not current_address:
                         if any(key in text for key in ['ул', 'пер', 'шоссе', 'просп', 'пр-кт', 'бульвар', 'пл', 'пр-т']):
-                            clean_addr = re.sub(r'\s+', ' ', text).strip()
-                            if len(clean_addr) < 200:
-                                current_address = clean_addr
+                            current_address = text
                             continue
 
                     if current_name:
@@ -237,23 +234,16 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 current_price = float(match.group(1).replace(',', '.'))
                                 station = await find_station(db, stations, current_name, current_address, None, None)
                                 if station:
-                                    if current_address and station.address != current_address:
-                                        station.address = current_address
                                     clean_name = normalize_name(current_name)
+                                    clean_addr = clean_address(current_address) if current_address else ""
                                     if clean_name and station.name != clean_name:
                                         station.name = clean_name
+                                    if clean_addr and station.address != clean_addr:
+                                        station.address = clean_addr
                                     await db.commit()
-                                    await save_price(
-                                        db,
-                                        station.id,
-                                        FuelType.AI_95,
-                                        current_price,
-                                        SourceType.PARSER,
-                                        confidence=0.7,
-                                        recorded_at=datetime.now(timezone.utc)
-                                    )
+                                    await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                     updated_count += 1
-                                    logger.info(f"Обновлена цена для {station.name}: {current_price} ₽")
+                                    logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
                                 current_name = None
                                 current_address = None
                                 current_price = None
@@ -263,31 +253,24 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                 if current_name and current_price is not None:
                     station = await find_station(db, stations, current_name, current_address, None, None)
                     if station:
-                        if current_address and station.address != current_address:
-                            station.address = current_address
                         clean_name = normalize_name(current_name)
+                        clean_addr = clean_address(current_address) if current_address else ""
                         if clean_name and station.name != clean_name:
                             station.name = clean_name
+                        if clean_addr and station.address != clean_addr:
+                            station.address = clean_addr
                         await db.commit()
-                        await save_price(
-                            db,
-                            station.id,
-                            FuelType.AI_95,
-                            current_price,
-                            SourceType.PARSER,
-                            confidence=0.7,
-                            recorded_at=datetime.now(timezone.utc)
-                        )
+                        await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                         updated_count += 1
-                        logger.info(f"Обновлена цена для {station.name}: {current_price} ₽")
+                        logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
 
-                logger.info(f"Обновлено {updated_count} станций в {city_name}")
+                logger.info(f"Обновлено {updated_count} станций в {city_name} (BS4)")
                 return
 
             except asyncio.TimeoutError:
-                logger.error(f"Таймаут при попытке {attempt+1}/{retries+1} для {city_name}")
+                logger.error(f"Таймаут при попытке {attempt+1}")
             except Exception as e:
-                logger.error(f"Попытка {attempt+1}/{retries+1} для {city_name} не удалась: {e}")
+                logger.error(f"Попытка {attempt+1} не удалась: {e}")
                 logger.error(traceback.format_exc())
 
             if attempt < retries:
@@ -298,7 +281,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                 logger.error(f"Все попытки для {city_name} провалены")
 
 async def find_station(db, stations, name: str, address: str, lat: float = None, lon: float = None):
-    if lat is not None and lon is not None:
+    if lat is not None and lon is not None and lat != 0.0 and lon != 0.0:
         for s in stations:
             dist = haversine_distance(lat, lon, s.latitude, s.longitude)
             if dist < 2.0:
@@ -311,8 +294,9 @@ async def find_station(db, stations, name: str, address: str, lat: float = None,
             return s
 
     if address:
+        clean_addr = clean_address(address)
         for s in stations:
-            if s.address and address.lower() in s.address.lower():
+            if s.address and clean_addr.lower() in s.address.lower():
                 return s
 
     brand = get_brand_from_name(name)
