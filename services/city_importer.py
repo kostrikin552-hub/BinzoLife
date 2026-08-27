@@ -1,5 +1,3 @@
-# services/city_importer.py – ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
-
 import logging
 import re
 import asyncio
@@ -15,7 +13,7 @@ from database.crud import (
     get_or_create_city, get_stations_by_city, get_city_slug
 )
 from database.models import FuelType, SourceType
-from utils.cleaners import normalize_name, clean_address
+from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +113,17 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
     current_lat = None
     current_lon = None
 
+    # Попробуем извлечь координаты из JS-массивов, если они есть
+    js_pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
+    js_matches = js_pattern.findall(html)
+    coords_map = {}
+    if js_matches:
+        for match in js_matches:
+            lat = float(match[0])
+            lon = float(match[1])
+            name = match[2].strip()
+            coords_map[name] = (lat, lon)
+
     for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
         text = elem.get_text(strip=True)
         if not text:
@@ -125,7 +134,9 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
         is_brand = any(b in clean_text for b in BRAND_KEYWORDS)
         if is_brand and len(clean_text) < 150:
             if current_name and current_price is not None:
-                stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
+                # Попытка найти координаты по имени
+                lat, lon = coords_map.get(current_name, (None, None))
+                stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
             current_name = clean_text
             current_address = None
             current_price = None
@@ -148,7 +159,9 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
         if match:
             try:
                 current_price = float(match.group(1).replace(',', '.'))
-                stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
+                if is_valid_price(current_price):
+                    lat, lon = coords_map.get(current_name, (None, None))
+                    stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
                 current_name = None
                 current_address = None
                 current_price = None
@@ -157,8 +170,9 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
             except ValueError:
                 pass
 
-    if current_name and current_price is not None:
-        stations.append((current_name, current_address or "", current_price, current_lat or 0.0, current_lon or 0.0))
+    if current_name and current_price is not None and is_valid_price(current_price):
+        lat, lon = coords_map.get(current_name, (None, None))
+        stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
 
     return stations
 
@@ -180,6 +194,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
         return {"error": "Не удалось найти АЗС на странице"}
 
     async with AsyncSessionLocal() as db:
+        # Вся работа с БД в одной транзакции
         async with db.begin():
             city = await get_or_create_city(db, city_name)
             if not city:
@@ -200,86 +215,80 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             logger.info(f"Слаг {alt_slug} установлен для города {city_name} (альтернативный)")
                         except IntegrityError:
                             logger.error(f"Не удалось установить слаг для {city_name}")
-            else:
-                logger.info(f"Слаг для города {city_name} уже существует: {existing_slug}")
 
-        city_id = city.id
+            city_id = city.id
+            # Собираем существующие станции для быстрого поиска
+            existing_stations = await get_stations_by_city(db, city_id)
+            existing_names = {s.name.lower(): s for s in existing_stations}
+            existing_addresses = {s.address.lower(): s for s in existing_stations if s.address}
 
-    created = 0
-    updated_prices = 0
-    updated_addresses = 0
-    updated_coords = 0
+            created = 0
+            updated_prices = 0
+            updated_addresses = 0
+            updated_coords = 0
 
-    for name, address, price, lat, lon in station_data:
-        try:
-            async with AsyncSessionLocal() as db:
-                city = await get_city_by_id(db, city_id)
-                if not city:
-                    logger.error(f"Город {city_id} не найден")
-                    continue
+            for name, address, price, lat, lon in station_data:
+                try:
+                    if not is_valid_price(price):
+                        logger.debug(f"Цена {price} аномальна для {name}, пропускаем")
+                        continue
 
-                existing_stations = await get_stations_by_city(db, city.id)
-                existing_names = {s.name.lower(): s for s in existing_stations}
-                existing_addresses = {s.address.lower(): s for s in existing_stations}
+                    clean_name = normalize_name(name)
+                    clean_name = truncate_string(clean_name, 255)
+                    clean_addr = clean_address(address, max_length=255) if address else ""
 
-                clean_name = normalize_name(name)
-                clean_name = truncate_string(clean_name, 255)
-                clean_addr = clean_address(address, max_length=255) if address else ""
+                    station = None
+                    norm_name = clean_name.lower()
+                    norm_address = clean_addr.lower() if clean_addr else ''
 
-                station = None
-                norm_name = clean_name.lower()
-                norm_address = clean_addr.lower() if clean_addr else ''
+                    if norm_name in existing_names:
+                        station = existing_names[norm_name]
+                    elif norm_address and norm_address in existing_addresses:
+                        station = existing_addresses[norm_address]
 
-                if norm_name in existing_names:
-                    station = existing_names[norm_name]
-                elif norm_address and norm_address in existing_addresses:
-                    station = existing_addresses[norm_address]
+                    if not station:
+                        brand = get_brand_from_name(clean_name)
+                        station = await create_station(
+                            db,
+                            city_id=city_id,
+                            name=clean_name,
+                            address=clean_addr,
+                            lat=lat if lat != 0.0 else 0.0,
+                            lon=lon if lon != 0.0 else 0.0,
+                            brand=brand
+                        )
+                        created += 1
+                        existing_names[norm_name] = station
+                        if norm_address:
+                            existing_addresses[norm_address] = station
+                    else:
+                        if clean_name and station.name != clean_name:
+                            station.name = clean_name
+                        if clean_addr and station.address != clean_addr:
+                            station.address = clean_addr
+                            updated_addresses += 1
+                        if lat != 0.0 and lon != 0.0 and (station.latitude != lat or station.longitude != lon):
+                            station.latitude = lat
+                            station.longitude = lon
+                            updated_coords += 1
 
-                if not station:
-                    station = await create_station(
+                    await save_price(
                         db,
-                        city_id=city.id,
-                        name=clean_name,
-                        address=clean_addr,
-                        lat=lat if lat != 0.0 else 0.0,
-                        lon=lon if lon != 0.0 else 0.0,
-                        brand=None
+                        station.id,
+                        FuelType.AI_95,
+                        price,
+                        SourceType.PARSER,
+                        confidence=0.7,
+                        recorded_at=datetime.now(timezone.utc)
                     )
-                    created += 1
-                    existing_names[norm_name] = station
-                    if norm_address:
-                        existing_addresses[norm_address] = station
-                else:
-                    if clean_name and station.name != clean_name:
-                        station.name = clean_name
-                    if clean_addr and station.address != clean_addr:
-                        station.address = clean_addr
-                        updated_addresses += 1
-                    if lat != 0.0 and lon != 0.0 and (station.latitude != lat or station.longitude != lon):
-                        station.latitude = lat
-                        station.longitude = lon
-                        updated_coords += 1
-                    await db.commit()
+                    updated_prices += 1
 
-                await save_price(
-                    db,
-                    station.id,
-                    FuelType.AI_95,
-                    price,
-                    SourceType.PARSER,
-                    confidence=0.7,
-                    recorded_at=datetime.now(timezone.utc)
-                )
-                updated_prices += 1
+                except Exception as e:
+                    logger.error(f"Ошибка при обработке записи {name}: {e}")
+                    # Откат всей транзакции при любой ошибке
+                    raise
 
-        except IntegrityError as e:
-            logger.debug(f"IntegrityError при обработке записи: {e}")
-            await db.rollback()
-            continue
-        except Exception as e:
-            logger.error(f"Ошибка при обработке записи: {e}")
-            await db.rollback()
-            continue
+            await db.commit()
 
     return {
         "city": city_name,
