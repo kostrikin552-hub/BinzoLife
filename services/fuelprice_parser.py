@@ -1,3 +1,5 @@
+# services/fuelprice_parser.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (закрытие aiohttp-сессии)
+
 import aiohttp
 import asyncio
 import logging
@@ -73,6 +75,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
         for attempt in range(retries + 1):
             try:
                 logger.info(f"Попытка {attempt+1}/{retries+1} для {city_name}, URL: {url}")
+                # Используем async with для автоматического закрытия сессии
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status != 200:
@@ -81,13 +84,13 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
+                # Сессия закрыта, работаем с html
                 # ---- JS-массивы (основной метод) ----
                 pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
                 matches = pattern.findall(html)
                 if matches:
                     logger.info(f"Найдены JS-массивы для {city_name}")
                     updated_count = 0
-                    # Накапливаем обновления для коммита
                     updates = []
                     for match in matches:
                         try:
@@ -114,7 +117,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             if not price or not is_valid_price(price):
                                 continue
 
-                            # Ищем станцию
                             station = None
                             for s in stations:
                                 dist = haversine_distance(lat, lon, s.latitude, s.longitude)
@@ -139,7 +141,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
-                            # Обновляем поля
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
                             if clean_addr and station.address != clean_addr:
@@ -155,7 +156,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             logger.error(f"Ошибка обработки блока: {e}")
                             continue
 
-                    # Один коммит для всех обновлений
                     if updates:
                         for station, price in updates:
                             await save_price(
@@ -195,7 +195,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
-                                # Сохраняем цену
                                 await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
                                 updated_count += 1
                                 logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
