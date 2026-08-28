@@ -23,3 +23,9 @@ async def help_cmd(message: types.Message):
         "🚀 <b>Готов начать экономить?</b> Просто нажми «Найти заправку»!"
     )
     await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
+
+@router.callback_query(F.data == "back_to_menu")
+async def back_to_menu_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
