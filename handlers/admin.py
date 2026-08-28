@@ -785,3 +785,75 @@ async def refresh_all_cities_cmd(message: types.Message):
     report = "📊 Итоги обновления:\n\n" + "\n".join(results)
     for i in range(0, len(report), 4000):
         await message.answer(report[i:i+4000], parse_mode=None)
+from test_production import run_all_checks
+
+@router.message(Command("test_prod"))
+@admin_only
+async def test_production_cmd(message: types.Message):
+    """Запускает полный производственный тест и отправляет отчёт."""
+    await message.answer("🔄 Запускаю полную проверку... Это может занять до 30 секунд.")
+    try:
+        # Запускаем тест
+        results = await run_all_checks()
+        # Формируем отчёт для отправки
+        report_lines = []
+        report_lines.append("🔍 **Результат производственного теста BinzoLife**")
+        report_lines.append("")
+        # Функция run_all_checks возвращает кортеж (passed, total, results_list, warnings)
+        # Но в текущей реализации она только логирует. Надо адаптировать.
+        # Проще: мы можем переиспользовать существующую функцию, но переделаем её, чтобы возвращала строку.
+        # Пока я дам упрощённый вариант – просто запустим проверки и соберём результат.
+        # Для простоты я перепишу логику прямо здесь.
+        from test_production import (
+            check_env_vars, check_db_connection, check_db_schema,
+            check_cities_and_stations, check_free_search_logic,
+            check_payment_and_pro_activation, check_trial,
+            check_pro_expiry_and_deactivation, check_referral_system,
+            check_achievements, check_parser, check_geocoder,
+            check_health_endpoint, check_notification_modules,
+            check_internal_token_security, check_provider_token,
+            check_real_payment
+        )
+        checks = [
+            ("Переменные окружения", await check_env_vars()),
+            ("Подключение к БД", await check_db_connection()),
+            ("Схема БД", await check_db_schema()),
+            ("Города и АЗС", await check_cities_and_stations()),
+            ("Логика бесплатных поисков", await check_free_search_logic()),
+            ("Оплата и активация PRO (симуляция)", await check_payment_and_pro_activation()),
+            ("Триал", await check_trial()),
+            ("Истечение PRO", await check_pro_expiry_and_deactivation()),
+            ("Реферальная система", await check_referral_system()),
+            ("Достижения", await check_achievements()),
+            ("Парсер цен", await check_parser()),
+            ("Геокодер", await check_geocoder()),
+            ("Эндпоинт /health", await check_health_endpoint()),
+            ("Модули уведомлений", await check_notification_modules()),
+            ("Безопасность INTERNAL_TOKEN", await check_internal_token_security()),
+            ("PROVIDER_TOKEN (наличие)", await check_provider_token()),
+            ("Реальные платежи (тестовый инвойс)", await check_real_payment()),
+        ]
+        passed = sum(1 for _, ok in checks if ok)
+        total = len(checks)
+        report_lines.append(f"📊 **Результат: {passed}/{total} проверок пройдено**")
+        report_lines.append("")
+        for name, ok in checks:
+            icon = "✅" if ok else "❌"
+            report_lines.append(f"{icon} {name}")
+        # Добавляем рекомендации
+        report_lines.append("")
+        report_lines.append("🔍 **Рекомендации:**")
+        report_lines.append("• Проверьте, что тестовый инвойс пришёл админу – если да, то PROVIDER_TOKEN работает")
+        report_lines.append("• Оплатите 1 рубль или 1 Star, чтобы убедиться, что PRO активируется")
+        report_lines.append("• Проверьте работу cron-заданий (цены, уведомления)")
+        report_lines.append("• Проверьте, что /health пингуется каждые 5-10 минут")
+        report_lines.append("• Протестируйте сценарий «Бензин заканчивается!»")
+        if passed == total:
+            report_lines.append("")
+            report_lines.append("🎉 **Все проверки успешны! Бот готов к продакшену.**")
+        else:
+            report_lines.append("")
+            report_lines.append("⚠️ **Некоторые проверки не пройдены. Исправьте ошибки перед запуском.**")
+        await message.answer("\n".join(report_lines), parse_mode="Markdown")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка при выполнении теста: {str(e)[:200]}")
