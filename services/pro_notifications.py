@@ -9,27 +9,15 @@ from database.crud import get_user, get_pro_notification_sent, mark_pro_notifica
 from config import settings
 
 logger = logging.getLogger(__name__)
-bot = Bot(token=settings.BOT_TOKEN)
 
-_BOT_ID = None
-
-async def get_bot_id():
-    global _BOT_ID
-    if _BOT_ID is None:
-        me = await bot.get_me()
-        _BOT_ID = me.id
-    return _BOT_ID
-
-async def send_pro_expiry_notifications():
-    """Проверяет пользователей с активным PRO и отправляет уведомления о скором окончании"""
+async def send_pro_expiry_notifications_with_bot(bot: Bot):
+    """Проверяет пользователей с активным PRO и отправляет уведомления о скором окончании, используя переданный экземпляр бота."""
     now = datetime.now(timezone.utc)
-    bot_id = await get_bot_id()
     async with AsyncSessionLocal() as db:
         users = await db.execute(
             select(User).where(
                 User.is_pro == True,
-                User.pro_until > now,
-                User.telegram_id != bot_id
+                User.pro_until > now
             )
         )
         users = users.scalars().all()
