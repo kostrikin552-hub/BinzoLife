@@ -69,6 +69,9 @@ def station_action_keyboard(station_id: int, price: float, availability, lat: fl
         map_url = f"https://yandex.ru/maps/?mode=search&text=АЗС&ll={lon},{lat}&z=13"
         buttons.append([InlineKeyboardButton(text="🗺 Показать все АЗС на карте", url=map_url)])
 
+    # КНОПКА ГЛАВНОГО МЕНЮ
+    buttons.append([InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_menu")])
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def notification_action_keyboard(notif_id: int):
