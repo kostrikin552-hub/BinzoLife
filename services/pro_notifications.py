@@ -1,3 +1,5 @@
+# services/pro_notifications.py – ИСПРАВЛЕННЫЙ (добавлена проверка на ID бота)
+
 import logging
 from datetime import datetime, timedelta, timezone
 from aiogram import Bot
@@ -11,15 +13,27 @@ from config import settings
 logger = logging.getLogger(__name__)
 bot = Bot(token=settings.BOT_TOKEN)
 
+# Получаем ID бота один раз при первом вызове
+_BOT_ID = None
+
+async def get_bot_id():
+    global _BOT_ID
+    if _BOT_ID is None:
+        me = await bot.get_me()
+        _BOT_ID = me.id
+    return _BOT_ID
+
 async def send_pro_expiry_notifications():
     """Проверяет пользователей с активным PRO и отправляет уведомления о скором окончании"""
     now = datetime.now(timezone.utc)
+    bot_id = await get_bot_id()
     async with AsyncSessionLocal() as db:
-        # Все пользователи с активным PRO (is_pro=True и pro_until > now)
+        # Все пользователи с активным PRO (is_pro=True и pro_until > now), исключаем самого бота
         users = await db.execute(
             select(User).where(
                 User.is_pro == True,
-                User.pro_until > now
+                User.pro_until > now,
+                User.telegram_id != bot_id  # <-- Исключаем самого бота
             )
         )
         users = users.scalars().all()
@@ -48,8 +62,8 @@ async def send_pro_expiry_notifications():
                         await mark_pro_notification_sent(db, user.id, '1h')
                         logger.info(f"Отправлено уведомление 1h для {user.telegram_id}")
                     except TelegramBadRequest as e:
-                        if "chat not found" in str(e):
-                            logger.warning(f"Пользователь {user.telegram_id} не найден (возможно, заблокировал бота или удалил аккаунт). Отключаем PRO.")
+                        if "chat not found" in str(e) or "bot can't send messages" in str(e):
+                            logger.warning(f"Пользователь {user.telegram_id} недоступен (заблокировал бота или это бот). Отключаем PRO.")
                             # Отключаем PRO пользователю
                             user.is_pro = False
                             user.pro_until = None
@@ -71,8 +85,8 @@ async def send_pro_expiry_notifications():
                         await mark_pro_notification_sent(db, user.id, '3h')
                         logger.info(f"Отправлено уведомление 3h для {user.telegram_id}")
                     except TelegramBadRequest as e:
-                        if "chat not found" in str(e):
-                            logger.warning(f"Пользователь {user.telegram_id} не найден. Отключаем PRO.")
+                        if "chat not found" in str(e) or "bot can't send messages" in str(e):
+                            logger.warning(f"Пользователь {user.telegram_id} недоступен. Отключаем PRO.")
                             user.is_pro = False
                             user.pro_until = None
                             await db.commit()
@@ -93,8 +107,8 @@ async def send_pro_expiry_notifications():
                         await mark_pro_notification_sent(db, user.id, '1d')
                         logger.info(f"Отправлено уведомление 1d для {user.telegram_id}")
                     except TelegramBadRequest as e:
-                        if "chat not found" in str(e):
-                            logger.warning(f"Пользователь {user.telegram_id} не найден. Отключаем PRO.")
+                        if "chat not found" in str(e) or "bot can't send messages" in str(e):
+                            logger.warning(f"Пользователь {user.telegram_id} недоступен. Отключаем PRO.")
                             user.is_pro = False
                             user.pro_until = None
                             await db.commit()
@@ -115,8 +129,8 @@ async def send_pro_expiry_notifications():
                         await mark_pro_notification_sent(db, user.id, '2d')
                         logger.info(f"Отправлено уведомление 2d для {user.telegram_id}")
                     except TelegramBadRequest as e:
-                        if "chat not found" in str(e):
-                            logger.warning(f"Пользователь {user.telegram_id} не найден. Отключаем PRO.")
+                        if "chat not found" in str(e) or "bot can't send messages" in str(e):
+                            logger.warning(f"Пользователь {user.telegram_id} недоступен. Отключаем PRO.")
                             user.is_pro = False
                             user.pro_until = None
                             await db.commit()
@@ -137,8 +151,8 @@ async def send_pro_expiry_notifications():
                         await mark_pro_notification_sent(db, user.id, '3d')
                         logger.info(f"Отправлено уведомление 3d для {user.telegram_id}")
                     except TelegramBadRequest as e:
-                        if "chat not found" in str(e):
-                            logger.warning(f"Пользователь {user.telegram_id} не найден. Отключаем PRO.")
+                        if "chat not found" in str(e) or "bot can't send messages" in str(e):
+                            logger.warning(f"Пользователь {user.telegram_id} недоступен. Отключаем PRO.")
                             user.is_pro = False
                             user.pro_until = None
                             await db.commit()
