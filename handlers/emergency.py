@@ -32,9 +32,9 @@ async def emergency_start(message: types.Message, state: FSMContext):
             )
             return
 
+    # Убираем кнопку геолокации, оставляем только ввод адреса
     kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📍 Отправить местоположение", request_location=True)],
             [KeyboardButton(text="✏️ Ввести адрес вручную")],
             [KeyboardButton(text="❌ Отмена")],
         ],
@@ -43,16 +43,9 @@ async def emergency_start(message: types.Message, state: FSMContext):
     await state.set_state(EmergencyStates.waiting_address)
     await message.answer(
         "🚨 Бензин на нуле? Я проверю, есть ли поблизости АЗС с топливом.\n\n"
-        "📎 Отправь своё местоположение или напиши адрес (например, «ТРЦ Планета, Красноярск»).",
+        "📎 Напишите адрес (например, «ТРЦ Планета, Красноярск»).",
         reply_markup=kb
     )
-
-@router.message(EmergencyStates.waiting_address, F.location)
-async def emergency_location(message: types.Message, state: FSMContext):
-    lat = message.location.latitude
-    lon = message.location.longitude
-    await state.update_data(lat=lat, lon=lon)
-    await check_availability_and_offer(message, state, lat, lon)
 
 @router.message(EmergencyStates.waiting_address, F.text)
 async def emergency_address(message: types.Message, state: FSMContext):
@@ -66,13 +59,14 @@ async def emergency_address(message: types.Message, state: FSMContext):
         await message.answer("❌ Поиск отменён.", reply_markup=main_menu_keyboard())
         return
 
+    # Геокодируем адрес (без геолокации)
     coords = await geocode_address(address)
     if not coords:
         await message.answer(
             "❌ Не удалось определить координаты по этому адресу.\n"
-            "Попробуйте отправить геолокацию через кнопку ниже.",
+            "Пожалуйста, уточните адрес или укажите более известное место (например, «ТРЦ Планета, Красноярск»).",
             reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="📍 Отправить местоположение", request_location=True)]],
+                keyboard=[[KeyboardButton(text="✏️ Ввести адрес снова")]],
                 resize_keyboard=True
             )
         )
@@ -81,6 +75,17 @@ async def emergency_address(message: types.Message, state: FSMContext):
     lat, lon = coords
     await state.update_data(lat=lat, lon=lon)
     await check_availability_and_offer(message, state, lat, lon)
+
+@router.message(EmergencyStates.waiting_address, F.text == "✏️ Ввести адрес снова")
+async def emergency_retry_address(message: types.Message, state: FSMContext):
+    # Просто повторяем приглашение
+    await message.answer(
+        "✏️ Введите адрес ещё раз (например, «ул. Ленина, 1, Красноярск»):",
+        reply_markup=ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True
+        )
+    )
 
 @router.message(EmergencyStates.waiting_address, F.text == "❌ Отмена")
 async def emergency_cancel(message: types.Message, state: FSMContext):
