@@ -6,6 +6,7 @@ services:
     plan: free
     region: frankfurt
     dockerfilePath: ./Dockerfile
+    numReplicas: 1   # <--- ОБЯЗАТЕЛЬНО: только один экземпляр
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -21,8 +22,5 @@ services:
         value: 8000
       - key: LOG_LEVEL
         value: INFO
-      - key: RENDER_EXTERNAL_URL
-        fromService:
-          type: web
-          name: binzolife
-          property: host
+      - key: WEB_CONCURRENCY   # <--- ограничиваем количество воркеров до 1
+        value: 1
