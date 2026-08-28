@@ -6,7 +6,7 @@ services:
     plan: free
     region: frankfurt
     dockerfilePath: ./Dockerfile
-    numReplicas: 1   # <--- ОБЯЗАТЕЛЬНО: только один экземпляр
+    numReplicas: 1
     envVars:
       - key: BOT_TOKEN
         sync: false
@@ -22,5 +22,5 @@ services:
         value: 8000
       - key: LOG_LEVEL
         value: INFO
-      - key: WEB_CONCURRENCY   # <--- ограничиваем количество воркеров до 1
+      - key: WEB_CONCURRENCY
         value: 1
