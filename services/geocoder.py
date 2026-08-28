@@ -11,7 +11,6 @@ YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&zoom=18&addressdetails=1"
 NOMINATIM_HEADERS = {"User-Agent": "BinzoLifeBot/1.0"}
 
-# Ограничение частоты
 _last_reverse_request_time = 0
 _REVERSE_LOCK = asyncio.Lock()
 
