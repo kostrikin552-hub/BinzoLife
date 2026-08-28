@@ -21,3 +21,8 @@ services:
         value: 8000
       - key: LOG_LEVEL
         value: INFO
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          type: web
+          name: binzolife
+          property: host
