@@ -1,0 +1,326 @@
+from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime, timedelta, timezone, date
+
+from database.session import AsyncSessionLocal
+from database.crud import (
+    get_user, get_city_by_name, is_user_pro, get_user_achievements,
+    get_referral_link, get_user_search_count, get_user_referrals_count,
+    get_next_achievement_progress, get_missed_price_drops,
+    get_potential_saving, get_user_search_history,
+    set_silent_hours, clear_silent_hours, is_silent_hours_now
+)
+from database.models import FuelType
+from keyboards.reply import main_menu_keyboard
+from keyboards.inline import popular_cities_keyboard, pro_purchase_keyboard
+from services.subscription import format_pro_until, check_pro
+
+router = Router()
+
+LEVELS = [
+    (0, "Новичок", 0),
+    (10, "Знаток", 1),
+    (50, "Эксперт", 3),
+    (100, "Легенда", 7),
+]
+
+def get_user_level(reputation: int) -> tuple:
+    for i, (threshold, name, bonus) in enumerate(LEVELS):
+        if reputation < threshold:
+            next_threshold = LEVELS[i][0] if i < len(LEVELS) else None
+            next_name = LEVELS[i][1] if i < len(LEVELS) else None
+            return name, bonus, next_threshold - reputation if next_threshold else 0, next_name
+    return LEVELS[-1][1], LEVELS[-1][2], 0, None
+
+@router.message(F.text == "👤 Профиль")
+async def show_profile(message: types.Message):
+    user_id = message.from_user.id
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, user_id)
+        if not user:
+            await message.answer("Сначала выполните /start")
+            return
+
+        city_name = user.city.name if user.city else "Не задан"
+        fuel_display = user.default_fuel.value if hasattr(user.default_fuel, 'value') else str(user.default_fuel)
+        tank_volume = user.tank_volume
+
+        is_pro = await check_pro(user.telegram_id)
+        is_trial = user.trial_used and user.pro_until and user.pro_until > datetime.now(timezone.utc)
+        if is_pro and user.pro_until:
+            days_left = (user.pro_until - datetime.now(timezone.utc)).days
+            status_text = f"✅ Активен до {user.pro_until.strftime('%d.%m.%Y %H:%M')} (осталось {days_left} дн.)"
+            if user.trial_used:
+                status_text = "🎁 Пробный период " + status_text
+        elif is_trial:
+            days_left = (user.pro_until - datetime.now(timezone.utc)).days
+            status_text = f"🎁 Пробный период активен до {user.pro_until.strftime('%d.%m.%Y %H:%M')} (осталось {days_left} дн.)"
+        else:
+            status_text = "❌ Не активен"
+
+        reputation = user.reputation or 0
+        level_name, level_bonus, rep_to_next, next_level_name = get_user_level(reputation)
+        if rep_to_next > 0:
+            level_text = f"Уровень: <b>{level_name}</b> (репутация {reputation}/{reputation + rep_to_next})"
+            level_text += f"\n   До следующего уровня ({next_level_name}) осталось {rep_to_next} баллов"
+        else:
+            level_text = f"Уровень: <b>{level_name}</b> (репутация {reputation})"
+
+        if level_bonus > 0:
+            level_text += f"\n   → Бонус уровня: +{level_bonus} дн PRO при активации"
+
+        achievements = await get_user_achievements(db, user.id)
+        total_achievements = len(achievements)
+        next_ach = await get_next_achievement_progress(db, user.id)
+
+        referrals_count = await get_user_referrals_count(db, user.id)
+        bonus_days_from_achievements = sum(a.bonus_days_granted for a in achievements)
+
+        search_count = await get_user_search_count(db, user.id)
+
+        potential_saving = await get_potential_saving(db, user.id)
+        missed_drops = await get_missed_price_drops(db, user.city_id)
+        if search_count > 0 and user.total_saved:
+            avg_saving = user.total_saved / search_count
+        else:
+            avg_saving = 0
+
+        text = f"👤 <b>Ваш профиль BinzoLife</b>\n\n"
+        text += f"📍 Город: {city_name}\n"
+        text += f"⛽ Топливо: {fuel_display} (бак {tank_volume} л)\n"
+        text += f"💎 PRO-статус: {status_text}\n"
+        text += f"🏅 {level_text}\n\n"
+
+        # --- БЕСПЛАТНЫЕ ПОИСКИ ---
+        if not is_pro:
+            today = date.today()
+            if user.last_free_search_date == today:
+                remaining = user.free_searches_today
+            else:
+                remaining = 1
+            text += f"🔍 Бесплатных точных поисков сегодня: {remaining} из 1\n\n"
+
+        text += "💰 <b>Финансы</b>\n"
+        if potential_saving > 0:
+            text += f"▪ Потенциальная экономия с PRO: <b>до {potential_saving:.0f} ₽</b> за последние заправки\n"
+        else:
+            text += "▪ Потенциальная экономия с PRO: <b>до 500 ₽</b> за заправку\n"
+        if missed_drops > 0:
+            text += f"▪ За последнюю неделю вы могли сэкономить <b>{missed_drops * 50:.0f} ₽</b>, если бы получали уведомления о снижении цен\n"
+        if avg_saving > 0:
+            text += f"▪ Средняя экономия за поиск: {avg_saving:.0f} ₽\n"
+        else:
+            text += "▪ Средняя экономия за поиск: пока нет данных\n"
+        text += "\n"
+
+        text += "🔔 <b>Уведомления</b>\n"
+        if missed_drops > 0:
+            text += f"▪ За неделю цена на ваших АЗС снижалась <b>{missed_drops} раз</b>\n"
+            text += f"▪ Вы пропустили экономию до <b>{missed_drops * 50:.0f} ₽</b>. С PRO вы бы не упустили.\n"
+            text += f"👉 <a href='https://t.me/BinzoLife_bot?start=pro'>Подключить PRO →</a>\n"
+        else:
+            text += "▪ У вас пока нет пропущенных уведомлений. Но с PRO вы будете первыми узнавать о снижении цен.\n"
+        text += "\n"
+
+        text += f"⭐ <b>Репутация: {reputation}</b>\n"
+        text += "Как заработать:\n"
+        text += "• Сообщить цену → +1\n"
+        text += "• Привести друга → +3 дня PRO\n"
+        text += "• Написать отзыв → +2\n"
+        text += "• Поделиться АЗС → +1 (1 раз в день)\n"
+        text += "\n"
+
+        text += "🏅 <b>Достижения</b>\n"
+        if total_achievements > 0:
+            text += f"▪ Получено: {total_achievements} наград\n"
+        if next_ach:
+            ach_name, progress, target = next_ach
+            bar_len = 20
+            filled = int(progress / target * bar_len) if target > 0 else 0
+            bar = "█" * filled + "░" * (bar_len - filled)
+            text += f"▪ Ближайшее: «{ach_name}» — "
+            if "репорт" in ach_name.lower():
+                text += "сообщите 1 цену\n"
+            elif "пригласил" in ach_name.lower():
+                text += "пригласите 1 друга\n"
+            elif "экономия" in ach_name.lower():
+                text += f"накопите экономию {target} ₽\n"
+            else:
+                text += f"прогресс {progress}/{target}\n"
+            text += f"   Прогресс: {bar} {progress}/{target}\n"
+            if progress < target:
+                text += f"   Награда: +1 репутация + бейдж\n"
+        else:
+            text += "▪ Все достижения получены! Вы — легенда!\n"
+        text += "\n"
+
+        text += "👥 <b>Рефералы</b>\n"
+        text += f"▪ Приглашено друзей: {referrals_count}\n"
+        text += f"▪ Бонусных дней PRO получено: {bonus_days_from_achievements}\n"
+        referral_link = await get_referral_link(db, user)
+        text += f"📎 Ваша ссылка: {referral_link}\n"
+        text += "\n"
+
+        if is_pro and user.pro_until:
+            text += f"💳 Следующее списание: {user.pro_until.strftime('%d.%m.%Y')}\n"
+        else:
+            text += "💎 <b>Вы теряете до 500 ₽ на каждой заправке без PRO.</b>\n"
+            text += "Окупится с первой поездки.\n"
+
+        # Клавиатура
+        kb_buttons = [
+            [InlineKeyboardButton(text="🏙 Изменить город", callback_data="change_city"),
+             InlineKeyboardButton(text="⛽ Изменить топливо", callback_data="change_fuel")],
+            [InlineKeyboardButton(text="📊 Моя статистика", callback_data="stats")],
+            [InlineKeyboardButton(text="📜 История поисков", callback_data="search_history")],
+            [InlineKeyboardButton(text="🔇 Настройка тишины", callback_data="silent_settings")],
+        ]
+        if not is_pro:
+            kb_buttons.append([InlineKeyboardButton(text="🔥 Оформить PRO за 99 ₽", callback_data="buy_pro")])
+        kb_buttons.append([InlineKeyboardButton(text="◀️ Назад в меню", callback_data="back_to_menu")])
+
+        kb = InlineKeyboardMarkup(inline_keyboard=kb_buttons)
+
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
+
+# ---------- Обработчики кнопок ----------
+@router.callback_query(F.data == "change_city")
+async def change_city(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "📍 Выбери новый город из списка:",
+        reply_markup=popular_cities_keyboard(with_back=True)
+    )
+
+@router.callback_query(F.data == "change_fuel")
+async def change_fuel(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.edit_text(
+        "⛽ Выберите топливо по умолчанию:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="АИ-92", callback_data="fuel_AI-92")],
+            [InlineKeyboardButton(text="АИ-95", callback_data="fuel_AI-95")],
+            [InlineKeyboardButton(text="АИ-98", callback_data="fuel_AI-98")],
+            [InlineKeyboardButton(text="ДТ", callback_data="fuel_DT")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_profile")]
+        ])
+    )
+
+@router.callback_query(lambda c: c.data.startswith("fuel_"))
+async def set_fuel(callback: types.CallbackQuery):
+    fuel_type = callback.data.split("_")[1]
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if user:
+            setattr(user, 'default_fuel', FuelType(fuel_type))
+            await db.commit()
+    await callback.answer(f"✅ Топливо {fuel_type} сохранено")
+    await show_profile(callback.message)
+
+@router.callback_query(F.data == "stats")
+async def show_stats(callback: types.CallbackQuery):
+    await callback.answer()
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.answer("Сначала /start")
+            return
+        search_count = await get_user_search_count(db, user.id)
+        economy_count = user.total_saved or 0
+        text = (
+            f"📊 <b>Ваша статистика</b>\n\n"
+            f"🔍 Поисков заправок: {search_count}\n"
+            f"💰 Всего сэкономлено: {economy_count:.2f} ₽\n"
+            f"⭐ Репутация: {user.reputation}\n"
+            f"🏅 Достижений: {len(await get_user_achievements(db, user.id))}\n"
+            f"👥 Приглашено друзей: {await get_user_referrals_count(db, user.id)}"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+            ]),
+            parse_mode="HTML"
+        )
+
+@router.callback_query(F.data == "back_to_profile")
+async def back_to_profile(callback: types.CallbackQuery):
+    await callback.answer()
+    await show_profile(callback.message)
+
+@router.callback_query(F.data == "back_to_menu")
+async def back_to_menu_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    await callback.message.delete()
+    await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+
+# ---------- История поисков ----------
+@router.callback_query(F.data == "search_history")
+async def show_search_history(callback: types.CallbackQuery):
+    await callback.answer()
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.message.answer("Сначала /start")
+            return
+        history = await get_user_search_history(db, user.id, limit=10)
+        if not history:
+            await callback.message.edit_text(
+                "📜 У вас пока нет истории поисков.\n"
+                "Начните искать заправки, и они появятся здесь.",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+                ])
+            )
+            return
+        text = "📜 <b>История ваших поисков</b>\n\n"
+        for i, entry in enumerate(history, 1):
+            station_name = entry.get("station_name", "неизвестно")
+            time_str = entry["recorded_at"].strftime("%d.%m %H:%M")
+            text += f"{i}. {station_name} — {time_str}\n"
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+            ]),
+            parse_mode="HTML"
+        )
+
+# ---------- Настройка тишины ----------
+@router.callback_query(F.data == "silent_settings")
+async def silent_settings(callback: types.CallbackQuery):
+    await callback.answer()
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
+        if not user:
+            await callback.message.answer("Сначала /start")
+            return
+        current_start = user.silent_hours_start
+        current_end = user.silent_hours_end
+        status = f"🔇 Текущие настройки: {current_start}:00 – {current_end}:00" if current_start is not None else "🔇 Тишина не настроена"
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="🕐 23:00 – 07:00", callback_data="silent_23_7")],
+            [InlineKeyboardButton(text="🕐 00:00 – 06:00", callback_data="silent_0_6")],
+            [InlineKeyboardButton(text="🕐 22:00 – 08:00", callback_data="silent_22_8")],
+            [InlineKeyboardButton(text="❌ Отключить тишину", callback_data="silent_off")],
+            [InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")]
+        ])
+        await callback.message.edit_text(
+            f"{status}\n\nВыберите интервал, когда уведомления не должны приходить:",
+            reply_markup=kb
+        )
+
+@router.callback_query(lambda c: c.data.startswith("silent_"))
+async def set_silent(callback: types.CallbackQuery):
+    await callback.answer()
+    parts = callback.data.split("_")
+    if parts[1] == "off":
+        async with AsyncSessionLocal() as db:
+            await clear_silent_hours(db, callback.from_user.id)
+        await callback.message.edit_text("✅ Тишина отключена. Уведомления будут приходить в любое время.")
+        return
+    start_hour, end_hour = map(int, parts[1].split("_"))
+    async with AsyncSessionLocal() as db:
+        await set_silent_hours(db, callback.from_user.id, start_hour, end_hour)
+    await callback.message.edit_text(f"✅ Тишина настроена: {start_hour}:00 – {end_hour}:00. Уведомления не будут приходить в этот период.")
