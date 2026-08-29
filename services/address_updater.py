@@ -32,11 +32,15 @@ async def update_station_addresses(limit: int = 100):
             cleaned = clean_address(raw)
             if is_likely_address(cleaned):
                 continue
+
+            # Проверяем кеш
             cached = await get_cached_address(db, station.latitude, station.longitude)
             if cached:
                 station.address = cached
                 updated += 1
                 continue
+
+            # Запрос к геокодеру с задержкой (защита от бана Nominatim)
             geo_addr = await reverse_geocode(station.latitude, station.longitude)
             if geo_addr:
                 await cache_address(db, station.latitude, station.longitude, geo_addr)
@@ -45,7 +49,10 @@ async def update_station_addresses(limit: int = 100):
                 logger.info(f"Обновлён адрес для станции {station.id}: {geo_addr}")
             else:
                 logger.warning(f"Не удалось получить адрес для станции {station.id}")
-            await asyncio.sleep(0.5)  # защита от частых запросов
+
+            # ОБЯЗАТЕЛЬНАЯ ЗАДЕРЖКА: 1.1 секунды между запросами к Nominatim
+            await asyncio.sleep(1.1)
+
         await db.commit()
         logger.info(f"Обновлено адресов для {updated} станций")
         return updated
