@@ -41,18 +41,16 @@ def generate_fuel_price_chart(
     """
     if len(dates) < 2 or len(prices) < 2:
         raise ValueError("Для построения графика требуется минимум 2 точки данных")
-
     if len(dates) != len(prices):
-        raise ValueError(f"Длины dates ({len(dates)}) и prices ({len(prices)}) не совпадают")
+        raise ValueError("Длины dates и prices не совпадают")
 
-    # Конвертация datetime в числовой формат matplotlib
     date_nums = [mdates.date2num(d) for d in dates]
     prices_arr = np.array(prices, dtype=float)
 
-    # 1. Геометрия холста (вертикальный 9:16)
+    # Геометрия
     figsize = (7.5, 13.33) if aspect_ratio == "9:16" else (8.0, 10.66)
     
-    # 2. Цветовая палитра Fintech Pro (используем hex, а не rgba)
+    # Цветовая палитра
     BG_COLOR = "#090D16"
     CARD_BG = "#131D2E"
     PRIMARY_COLOR = "#0284C7"
@@ -62,19 +60,17 @@ def generate_fuel_price_chart(
     MAX_COLOR = "#F87171"
     TEXT_MAIN = "#F8FAFC"
     TEXT_MUTED = "#94A3B8"
-    GRID_COLOR = "#334155"   # hex вместо rgba
+    GRID_COLOR = "#334155"
 
-    # Шрифты
     plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = ['Plus Jakarta Sans', 'Inter', 'DejaVu Sans', 'Arial', 'Liberation Sans']
-    # Исправлено: правильное имя параметра — axes.edgecolor (без опечатки)
+    plt.rcParams['font.sans-serif'] = ['Plus Jakarta Sans', 'Inter', 'DejaVu Sans', 'Arial']
     plt.rcParams['axes.edgecolor'] = GRID_COLOR
     plt.rcParams['axes.linewidth'] = 1.0
 
     fig, ax = plt.subplots(figsize=figsize, dpi=dpi, facecolor=BG_COLOR)
     ax.set_facecolor(BG_COLOR)
 
-    # 3. Расчет аналитических метрик
+    # Метрики
     current_price = prices_arr[-1]
     first_price = prices_arr[0]
     min_price = float(np.min(prices_arr))
@@ -89,7 +85,7 @@ def generate_fuel_price_chart(
     is_down = price_change < 0
     delta_color = MAX_COLOR if is_up else (MIN_COLOR if is_down else TEXT_MUTED)
 
-    # 4. Сглаживание кривой
+    # Сглаживание
     date_nums_arr = np.array(date_nums)
     if HAS_SCIPY and len(date_nums) >= 4:
         x_dense = np.linspace(date_nums_arr.min(), date_nums_arr.max(), 350)
@@ -100,26 +96,25 @@ def generate_fuel_price_chart(
         x_dense = np.linspace(date_nums_arr.min(), date_nums_arr.max(), 200)
         y_dense = np.interp(x_dense, date_nums_arr, prices_arr)
 
-    # 5. Границы по оси Y
     y_range = max(0.8, max_price - min_price)
     y_min_plot = min_price - (y_range * 0.42)
     y_max_plot = max_price + (y_range * 0.58)
 
-    # 6. Градиентная заливка под кривой
+    # Градиентная заливка
     layers = 20
     for i in range(layers):
         alpha = 0.012 + 0.32 * (1.0 - (i / layers) ** 0.5)
         level_y = y_min_plot + (y_dense - y_min_plot) * (1.0 - (i / layers))
         ax.fill_between(x_dense, level_y, y_dense, color=PRIMARY_COLOR, alpha=alpha, lw=0, zorder=2)
 
-    # 7. Основная линия со свечением
+    # Основная линия
     glow_effect = [
         PathEffects.SimpleLineShadow(offset=(0, -2.5), shadow_color=PRIMARY_COLOR, alpha=0.35, rho=0.85),
         PathEffects.Normal()
     ]
     ax.plot(x_dense, y_dense, color=PRIMARY_COLOR, linewidth=3.4, zorder=4, path_effects=glow_effect)
 
-    # 8. Скользящая средняя (7-Day SMA)
+    # SMA 7
     if show_sma and len(prices) >= 7:
         sma_7 = np.convolve(prices_arr, np.ones(7)/7, mode='valid')
         sma_dates = date_nums_arr[6:]
@@ -132,19 +127,19 @@ def generate_fuel_price_chart(
             y_sma_dense = sma_7
         ax.plot(x_sma_dense, y_sma_dense, color=SMA_COLOR, linewidth=2.0, linestyle='--', alpha=0.85, zorder=3, label="SMA 7")
 
-    # 9. Линия средней цены
+    # Средняя цена
     ax.axhline(avg_price, color=AVG_COLOR, linestyle=':', linewidth=2.0, alpha=0.75, zorder=3)
 
-    # 10. Точки данных
+    # Точки данных
     ax.scatter(date_nums_arr, prices_arr, color=CARD_BG, edgecolor=PRIMARY_COLOR, s=36, linewidth=2.0, zorder=5)
 
-    # 11. Акцентная точка на текущей цене
+    # Акцент на последней цене
     last_x, last_y = date_nums_arr[-1], prices_arr[-1]
     ax.scatter([last_x], [last_y], color=PRIMARY_COLOR, alpha=0.25, s=280, zorder=6)
     ax.scatter([last_x], [last_y], color=PRIMARY_COLOR, alpha=0.55, s=120, zorder=7)
     ax.scatter([last_x], [last_y], color=CARD_BG, edgecolor=PRIMARY_COLOR, s=64, linewidth=2.8, zorder=8)
 
-    # 12. Выноски экстремумов
+    # Выноски мин/макс
     min_x, min_y = date_nums_arr[min_idx], prices_arr[min_idx]
     ax.annotate(
         f" Мин: {min_price:.2f} {currency} ",
@@ -171,13 +166,24 @@ def generate_fuel_price_chart(
         zorder=9
     )
 
-    # 13. Настройка осей и сетки
+    # ===== ИСПРАВЛЕНИЕ: МЕТКИ ОСИ X НЕ СЛИПАЮТСЯ =====
+    # Вычисляем интервал так, чтобы на оси было не более 6-7 меток
+    total_days = len(dates)
+    # Минимальный интервал – 2 дня, максимальный – 7
+    interval = max(2, min(7, total_days // 6))
+    ax.xaxis.set_major_locator(mdates.DayLocator(interval=interval))
+    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
+    # Поворот на 25 градусов и увеличение отступа, чтобы текст не наезжал
+    plt.xticks(rotation=25, ha='right', fontsize=9, color=TEXT_MUTED)
+    # Добавляем отступ снизу, чтобы текст не обрезался
+    plt.subplots_adjust(bottom=0.12)
+    # ================================================
+
+    # Ограничения по осям
     ax.set_ylim(y_min_plot, y_max_plot)
     ax.set_xlim(date_nums_arr[0] - 0.5, date_nums_arr[-1] + 0.8)
 
-    ax.xaxis.set_major_locator(mdates.DayLocator(interval=max(1, len(dates) // 6)))
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%d.%m'))
-    plt.xticks(rotation=25, ha='right', fontsize=9, color=TEXT_MUTED)
+    ax.yaxis.set_major_formatter('{x:.2f}')
     plt.yticks(fontsize=9, color=TEXT_MUTED)
 
     ax.grid(True, linestyle='--', alpha=0.5, color=GRID_COLOR, zorder=1)
@@ -186,7 +192,7 @@ def generate_fuel_price_chart(
     ax.spines['left'].set_color(GRID_COLOR)
     ax.spines['bottom'].set_color(GRID_COLOR)
 
-    # 14. Header
+    # Заголовок
     delta_symbol = "▲ +" if is_up else ("▼ " if is_down else "— ")
     delta_str = f"{delta_symbol}{price_change:+.2f} {currency} ({pct_change:+.1f}%)"
 
@@ -197,7 +203,7 @@ def generate_fuel_price_chart(
     fig.text(0.88, 0.95, f"{current_price:.2f} {currency}", fontsize=16, fontweight='heavy', color=TEXT_MAIN, ha='right', va='top')
     fig.text(0.88, 0.92, delta_str, fontsize=9.5, fontweight='bold', color=delta_color, ha='right', va='top')
 
-    # 15. Нижняя плашка аналитики
+    # Нижняя плашка аналитики
     if show_stats_grid:
         spread = max_price - min_price
         fair_diff = current_price - avg_price
@@ -211,9 +217,9 @@ def generate_fuel_price_chart(
         fig.text(0.5, 0.025, stats_line, fontsize=8.5, fontweight='semibold', color=TEXT_MUTED, ha='center', va='bottom',
                  bbox=dict(boxstyle="round,pad=0.5,rounding_size=0.4", fc=CARD_BG, ec=GRID_COLOR, lw=1.2))
 
-    plt.subplots_adjust(top=0.90, bottom=0.08, left=0.12, right=0.92)
+    plt.subplots_adjust(top=0.90, left=0.12, right=0.92)
 
-    # 16. Рендеринг
+    # Рендеринг
     buffer = io.BytesIO()
     plt.savefig(buffer, format='png', dpi=dpi, facecolor=BG_COLOR, edgecolor='none', bbox_inches='tight')
     plt.close(fig)
@@ -222,13 +228,9 @@ def generate_fuel_price_chart(
 
 
 # ============================================================================
-# АДАПТЕР ДЛЯ ВАШЕГО ПРОЕКТА (с демо-данными)
+# АДАПТЕР ДЛЯ ВАШЕГО ПРОЕКТА
 # ============================================================================
 async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int = 30, force_demo: bool = False) -> Optional[bytes]:
-    """
-    Генерирует премиальный график цен для АЗС.
-    Если данных мало или force_demo=True, использует демо-данные.
-    """
     logger.info(f"Генерация графика для station_id={station_id}, fuel_type={fuel_type}, days={days}, force_demo={force_demo}")
     async with AsyncSessionLocal() as db:
         station = await get_station_by_id(db, station_id)
@@ -240,7 +242,6 @@ async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int =
         station_name = station.name or f"АЗС #{station_id}"
         fuel_type_str = fuel_type.value if hasattr(fuel_type, 'value') else str(fuel_type)
 
-        # Если данных нет или force_demo=True – создаём демо-данные
         if force_demo or not history or len(history) < 2:
             logger.info(f"Создаём демо-данные для station_id={station_id}")
             end_date = datetime.now()
@@ -256,11 +257,9 @@ async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int =
             is_demo = True
             logger.info(f"Создано {len(dates)} демо-точек")
         else:
-            # Используем реальные данные
             history.sort(key=lambda x: x.recorded_at)
             dates = [h.recorded_at for h in history]
             prices = [h.price for h in history]
-            # Фильтруем аномалии
             filtered = [(d, p) for d, p in zip(dates, prices) if 0 < p < 200]
             if not filtered:
                 logger.warning(f"Все цены аномальны для station_id={station_id}, переключаемся на демо")
@@ -268,11 +267,9 @@ async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int =
             dates, prices = zip(*filtered)
             is_demo = False
 
-        # Если данных всё ещё мало (меньше 2), форсируем демо
         if len(dates) < 2:
             return await generate_price_graph(station_id, fuel_type, days, force_demo=True)
 
-        # Генерируем график
         try:
             chart_bytes = generate_fuel_price_chart(
                 station_name=station_name,
