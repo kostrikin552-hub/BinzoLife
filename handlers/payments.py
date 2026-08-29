@@ -116,7 +116,6 @@ async def pro_auto_renew_choice(callback: types.CallbackQuery):
         logger.error(f"Ошибка при создании инвойса: {e}")
         await callback.message.answer("❌ Не удалось создать платёж. Попробуйте позже.")
 
-# ---------- ОПЛАТА STARS ДЛЯ PRO ----------
 @router.callback_query(F.data == "buy_pro_stars")
 async def buy_pro_stars(callback: types.CallbackQuery):
     await callback.answer()
@@ -170,6 +169,12 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
             await pre_checkout.answer(ok=False, error_message="Некорректная валюта.")
             return
         await pre_checkout.answer(ok=True)
+    elif payload == "test_payment_payload":
+        # Тестовый платёж — разрешаем любую сумму, но проверяем только валюту
+        if pre_checkout.currency != "RUB":
+            await pre_checkout.answer(ok=False, error_message="Некорректная валюта.")
+            return
+        await pre_checkout.answer(ok=True)
     else:
         await pre_checkout.answer(ok=False, error_message="Некорректный платёж.")
 
@@ -181,6 +186,46 @@ async def successful_payment(message: types.Message):
     total_amount = payment.total_amount / 100 if payment.currency == "RUB" else payment.total_amount
     payload = payment.invoice_payload
     currency = payment.currency
+
+    logger.info(f"Получен успешный платёж: payload={payload}, currency={currency}, amount={total_amount}")
+
+    # ===== ОБРАБОТКА ТЕСТОВОГО ПЛАТЕЖА =====
+    if payload == "test_payment_payload":
+        async with AsyncSessionLocal() as db:
+            user = await get_user(db, message.from_user.id)
+            if not user:
+                user = await create_user(db, message.from_user.id, message.from_user.username)
+                city = await get_city_by_name(db, "Красноярск")
+                if city:
+                    user.city_id = city.id
+                    await db.commit()
+            # Проверяем, не обработан ли уже этот платёж
+            existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
+            if existing:
+                await message.answer("Этот платёж уже был обработан.")
+                return
+            # Создаём запись платежа (тестовый, без реальных денег)
+            await create_payment(
+                db,
+                user.id,
+                telegram_charge_id,
+                provider_charge_id,
+                total_amount,
+                currency=currency,
+                tariff="test"
+            )
+            # Активируем PRO на 30 дней для теста
+            await activate_pro(db, user, days=30)
+            await db.commit()
+        until = format_pro_until(user.pro_until)
+        await message.answer(
+            f"✅ <b>Тестовый платёж успешно обработан! PRO активирован до {until}</b>\n"
+            "Теперь вы можете тестировать все функции бота.\n"
+            "Спасибо за проверку!",
+            reply_markup=main_menu_keyboard()
+        )
+        return
+    # ======================================
 
     if currency == "XTR" and payload == "emergency_search_stars":
         async with AsyncSessionLocal() as db:
@@ -233,7 +278,13 @@ async def successful_payment(message: types.Message):
         return
 
     if payload.startswith("pro_month_30d"):
-        auto_renew = bool(int(payload.split("_")[3])) if len(payload.split("_")) > 3 else False
+        # Безопасно извлекаем auto_renew
+        auto_renew = False
+        parts = payload.split("_")
+        if len(parts) > 3 and parts[3].isdigit():
+            auto_renew = bool(int(parts[3]))
+        else:
+            logger.warning(f"Не удалось распарсить auto_renew из payload: {payload}")
         if total_amount != PRICE:
             await message.answer("❌ Некорректная сумма.")
             return
