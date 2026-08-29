@@ -1,5 +1,3 @@
-# handlers/start.py – ИСПРАВЛЕННЫЙ (убрано ошибочное импортирование Dispatcher)
-
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -29,7 +27,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
-    # Проверяем подписку на канал
     is_subscribed = await check_subscription(message.bot, user_id)
 
     if not is_subscribed:
@@ -47,7 +44,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
         )
         return
 
-    # Если подписан – продолжаем
     await process_start(message, state)
 
 @router.callback_query(F.data == "check_subscribe", SubscribeStates.waiting_subscribe)
@@ -75,7 +71,6 @@ async def check_subscription(bot, user_id: int) -> bool:
             chat_member = await bot.get_chat_member(chat_id="@BinzoLife_News", user_id=user_id)
             return chat_member.status in ["member", "administrator", "creator"]
         except Exception:
-            # Если бот не может проверить (не админ) – пропускаем
             return True
 
 async def process_start(message: types.Message, state: FSMContext):
@@ -96,8 +91,10 @@ async def process_start(message: types.Message, state: FSMContext):
         ref_code = None
 
     async with AsyncSessionLocal() as db:
+        # ИСПРАВЛЕНИЕ: проверяем существование пользователя до обработки реферала
         user = await get_user(db, user_id)
         if not user:
+            # Только НОВЫЙ пользователь может активировать реферал
             user = await create_user(db, user_id, username)
             if ref_code:
                 await apply_referral(db, user.id, ref_code)
@@ -106,7 +103,6 @@ async def process_start(message: types.Message, state: FSMContext):
                 user.city_id = city.id
                 await db.commit()
 
-            # Приветствие (короткое продающее)
             await message.answer(
                 "📖 **BinzoLife за 3 шага:**\n\n"
                 "1. Нажми «Найти заправку» → выбери топливо → получи АЗС с ценой, наличием и маршрутом.\n"
@@ -118,6 +114,7 @@ async def process_start(message: types.Message, state: FSMContext):
             )
             return
 
+        # Если пользователь уже существует, реферал игнорируется
         if user.city_id:
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
