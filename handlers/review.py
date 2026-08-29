@@ -2,9 +2,12 @@ from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from datetime import datetime, timedelta, timezone
 from database.session import AsyncSessionLocal
 from database.crud import get_user, create_review, get_avg_rating
+from database.models import Review
 from keyboards.reply import main_menu_keyboard
+from sqlalchemy import select
 
 router = Router()
 
@@ -14,6 +17,23 @@ class ReviewStates(StatesGroup):
 
 @router.message(F.text == "⭐ Оставить отзыв")
 async def start_review(message: types.Message, state: FSMContext):
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, message.from_user.id)
+        if not user:
+            await message.answer("Сначала выполните /start")
+            return
+
+        # Проверка: не оставлял ли пользователь отзыв за последние 24 часа
+        last_review = await db.execute(
+            select(Review).where(
+                Review.user_id == user.id,
+                Review.created_at >= datetime.now(timezone.utc) - timedelta(days=1)
+            )
+        ).scalar_one_or_none()
+        if last_review:
+            await message.answer("⏳ Вы уже оставляли отзыв за последние 24 часа. Попробуйте завтра.")
+            return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⭐ 1", callback_data="rate_1"),
          InlineKeyboardButton(text="⭐ 2", callback_data="rate_2"),
@@ -64,7 +84,7 @@ async def save_review(message: types.Message, state: FSMContext, telegram_id: in
         await message.answer("Что-то пошло не так. Попробуйте снова.")
         await state.clear()
         return
-    
+
     async with AsyncSessionLocal() as db:
         user = await get_user(db, telegram_id)
         if not user:
@@ -72,13 +92,9 @@ async def save_review(message: types.Message, state: FSMContext, telegram_id: in
             await state.clear()
             return
 
-        # Создаём отзыв
         await create_review(db, user.id, rating, comment)
-
-        # --- НАЧИСЛЯЕМ РЕПУТАЦИЮ ЗА ОТЗЫВ (+2) ---
         user.reputation += 2
         await db.commit()
-        # -----------------------------------------
 
         avg = await get_avg_rating(db)
         await message.answer(
