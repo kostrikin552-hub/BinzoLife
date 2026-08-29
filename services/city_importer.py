@@ -1,5 +1,3 @@
-# services/city_importer.py – ИСПРАВЛЕННЫЙ (добавлен импорт FuelPrice)
-
 import logging
 import re
 import asyncio
@@ -15,7 +13,7 @@ from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
     get_or_create_city, get_stations_by_city, get_city_slug
 )
-from database.models import FuelType, SourceType, FuelPrice  # <-- ДОБАВЛЕН IMPELEMENT
+from database.models import FuelType, SourceType, FuelPrice
 from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
@@ -116,7 +114,6 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
     current_lat = None
     current_lon = None
 
-    # Попробуем извлечь координаты из JS-массивов, если они есть
     js_pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
     js_matches = js_pattern.findall(html)
     coords_map = {}
@@ -195,10 +192,8 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
     if not station_data:
         return {"error": "Не удалось найти АЗС на странице"}
 
-    # Используем одну сессию и управляем транзакцией вручную
     async with AsyncSessionLocal() as db:
         try:
-            # Начинаем транзакцию явно
             await db.begin()
 
             city = await get_or_create_city(db, city_name)
@@ -218,7 +213,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         alt_slug = f"{slug}_{city.id}"
                         try:
                             await set_city_slug(db, city.id, alt_slug)
-                            logger.info(f"Слаг {alt_slug} установлен для города {city_name} (альтернативный)")
+                            logger.info(f"Слаг {alt_slug} установлен для города {city_name}")
                         except IntegrityError:
                             logger.error(f"Не удалось установить слаг для {city_name}")
                             await db.rollback()
@@ -226,10 +221,11 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
 
             city_id = city.id
 
-            # Получаем существующие станции
             existing_stations = await get_stations_by_city(db, city_id)
-            existing_names = {s.name.lower(): s for s in existing_stations}
-            existing_addresses = {s.address.lower(): s for s in existing_stations if s.address}
+            existing_by_coords = {}
+            for s in existing_stations:
+                if s.latitude and s.longitude:
+                    existing_by_coords[(round(s.latitude, 6), round(s.longitude, 6))] = s
 
             created = 0
             updated_prices = 0
@@ -246,14 +242,17 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     clean_name = truncate_string(clean_name, 255)
                     clean_addr = clean_address(address, max_length=255) if address else ""
 
+                    # Ищем по координатам с округлением
                     station = None
-                    norm_name = clean_name.lower()
-                    norm_address = clean_addr.lower() if clean_addr else ''
+                    if lat != 0.0 and lon != 0.0:
+                        key = (round(lat, 6), round(lon, 6))
+                        station = existing_by_coords.get(key)
 
-                    if norm_name in existing_names:
-                        station = existing_names[norm_name]
-                    elif norm_address and norm_address in existing_addresses:
-                        station = existing_addresses[norm_address]
+                    if not station and clean_addr:
+                        for s in existing_stations:
+                            if s.address and clean_addr.lower() in s.address.lower():
+                                station = s
+                                break
 
                     if not station:
                         brand = get_brand_from_name(clean_name)
@@ -267,12 +266,10 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             is_active=True
                         )
                         db.add(station)
-                        # flush нужен, чтобы получить ID станции для сохранения цены
                         await db.flush()
                         created += 1
-                        existing_names[norm_name] = station
-                        if norm_address:
-                            existing_addresses[norm_address] = station
+                        if station.latitude and station.longitude:
+                            existing_by_coords[(round(station.latitude, 6), round(station.longitude, 6))] = station
                     else:
                         if clean_name and station.name != clean_name:
                             station.name = clean_name
@@ -284,7 +281,6 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             station.longitude = lon
                             updated_coords += 1
 
-                    # Сохраняем цену напрямую, используя модель FuelPrice
                     price_entry = FuelPrice(
                         station_id=station.id,
                         fuel_type=FuelType.AI_95,
@@ -298,12 +294,10 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     updated_prices += 1
 
                 except Exception as e:
-                    # Если одна запись не обработалась, откатываем всю транзакцию
                     logger.error(f"Ошибка при обработке записи {name}: {e}")
                     await db.rollback()
                     return {"error": f"Ошибка при обработке записи {name}: {e}"}
 
-            # Если всё успешно — коммитим
             await db.commit()
 
             return {
