@@ -3,7 +3,7 @@ services:
     name: binzolife
     runtime: docker
     repo: https://github.com/kostrikin552-hub/BinzoLife
-    plan: free
+    plan: starter   # Рекомендую перейти на платный тариф для стабильности
     region: frankfurt
     dockerfilePath: ./Dockerfile
     numReplicas: 1
@@ -18,9 +18,16 @@ services:
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: YANDEX_GEOCODER_API_KEY
+        sync: false
       - key: PORT
         value: 8000
       - key: LOG_LEVEL
         value: INFO
       - key: WEB_CONCURRENCY
         value: 1
+      - key: RENDER_EXTERNAL_URL
+        fromService:
+          type: web
+          name: binzolife
+          property: host
