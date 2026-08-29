@@ -177,6 +177,26 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
     else:
         await pre_checkout.answer(ok=False, error_message="Некорректный платёж.")
 
+# ========== НОВЫЕ ОБРАБОТЧИКИ ДЛЯ КНОПОК ПОСЛЕ ОПЛАТЫ ==========
+@router.callback_query(F.data == "pro_go_find")
+async def pro_go_find(callback: types.CallbackQuery):
+    await callback.answer()
+    from handlers.find import start_find
+    await start_find(callback.message, None)  # state=None
+
+@router.callback_query(F.data == "pro_go_notifications")
+async def pro_go_notifications(callback: types.CallbackQuery):
+    await callback.answer()
+    from handlers.notifications import list_notifications
+    await list_notifications(callback.message)
+
+@router.callback_query(F.data == "pro_go_profile")
+async def pro_go_profile(callback: types.CallbackQuery):
+    await callback.answer()
+    from handlers.profile import show_profile
+    await show_profile(callback.message)
+# =================================================================
+
 @router.message(F.successful_payment)
 async def successful_payment(message: types.Message):
     payment: SuccessfulPayment = message.successful_payment
@@ -188,169 +208,125 @@ async def successful_payment(message: types.Message):
 
     logger.info(f"Получен успешный платёж: payload={payload}, currency={currency}, amount={total_amount}")
 
-    # ===== ТЕСТОВЫЙ ПЛАТЁЖ =====
-    if payload == "test_payment_payload":
-        async with AsyncSessionLocal() as db:
-            user = await get_user(db, message.from_user.id)
-            if not user:
-                user = await create_user(db, message.from_user.id, message.from_user.username)
-                city = await get_city_by_name(db, "Красноярск")
-                if city:
-                    user.city_id = city.id
-                    await db.commit()
-            existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
-            if existing:
-                await message.answer("Этот платёж уже был обработан.")
-                return
-            await create_payment(
-                db,
-                user.id,
-                telegram_charge_id,
-                provider_charge_id,
-                total_amount,
-                currency=currency,
-                tariff="test"
-            )
+    # Определяем, тестовый это платёж или нет
+    is_test = (payload == "test_payment_payload")
+
+    # ===== ОБЩАЯ ЛОГИКА АКТИВАЦИИ PRO =====
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, message.from_user.id)
+        if not user:
+            user = await create_user(db, message.from_user.id, message.from_user.username)
+            city = await get_city_by_name(db, "Красноярск")
+            if city:
+                user.city_id = city.id
+                await db.commit()
+
+        # Проверяем дубликат платежа
+        existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
+        if existing:
+            await message.answer("Этот платёж уже был обработан.")
+            return
+
+        # Обрабатываем разные типы payload
+        if payload == "test_payment_payload":
+            await create_payment(db, user.id, telegram_charge_id, provider_charge_id, total_amount, currency=currency, tariff="test")
             await activate_pro(db, user, days=30)
             await db.commit()
-        until = format_pro_until(user.pro_until)
-        await message.answer(
-            f"✅ <b>Тестовый платёж успешно обработан! PRO активирован до {until}</b>\n"
-            "Теперь вы можете тестировать все функции бота.\n"
-            "Спасибо за проверку!",
-            reply_markup=main_menu_keyboard()
-        )
-        return
+            until = format_pro_until(user.pro_until)
+            await send_pro_activated_message(message, until, auto_renew=False, is_test=True)
+            return
 
-    # ===== ОПЛАТА STARS ДЛЯ ЭКСТРЕННОГО ПОИСКА =====
-    if currency == "XTR" and payload == "emergency_search_stars":
-        async with AsyncSessionLocal() as db:
-            user = await get_user(db, message.from_user.id)
-            if not user:
-                await message.answer("Сначала /start")
-                return
+        if currency == "XTR" and payload == "emergency_search_stars":
             await grant_emergency_search(db, user.id)
-        await message.answer(
-            "⭐ Оплата Stars принята! Вы можете использовать экстренный поиск.\n"
-            "Нажмите «🚨 Бензин заканчивается!» и введите адрес.",
-            reply_markup=main_menu_keyboard()
-        )
-        return
-
-    # ===== ОПЛАТА STARS ДЛЯ PRO =====
-    if currency == "XTR" and payload == "pro_month_stars":
-        if total_amount != STARS_PRICE:
-            await message.answer("❌ Некорректное количество Stars.")
-            return
-        async with AsyncSessionLocal() as db:
-            user = await get_user(db, message.from_user.id)
-            if not user:
-                user = await create_user(db, message.from_user.id, message.from_user.username)
-                city = await get_city_by_name(db, "Красноярск")
-                if city:
-                    user.city_id = city.id
-                    await db.commit()
-            existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
-            if existing:
-                await message.answer("Этот платёж уже был обработан.")
-                return
-            await create_payment(
-                db,
-                user.id,
-                telegram_charge_id,
-                provider_charge_id,
-                total_amount,
-                currency="XTR",
-                tariff="pro_month"
+            await message.answer(
+                "⭐ Оплата Stars принята! Вы можете использовать экстренный поиск.\n"
+                "Нажмите «🚨 Бензин заканчивается!» и введите адрес.",
+                reply_markup=main_menu_keyboard()
             )
+            return
+
+        if currency == "XTR" and payload == "pro_month_stars":
+            if total_amount != STARS_PRICE:
+                await message.answer("❌ Некорректное количество Stars.")
+                return
+            await create_payment(db, user.id, telegram_charge_id, provider_charge_id, total_amount, currency="XTR", tariff="pro_month")
             await activate_pro(db, user, days=30)
             await db.commit()
-        until = format_pro_until(user.pro_until)
-        await message.answer(
-            f"✅ <b>PRO активирован до {until}</b>\n"
-            "Теперь вы будете получать уведомления о выгодных ценах и появлении топлива.\n"
-            "Спасибо за поддержку!",
-            reply_markup=main_menu_keyboard()
-        )
-        return
-
-    # ===== РУБЛЁВЫЙ ПЛАТЁЖ ДЛЯ PRO (ОСНОВНОЙ) =====
-    if payload.startswith("pro_month_30d"):
-        # Безопасно извлекаем auto_renew
-        auto_renew = False
-        parts = payload.split("_")
-        if len(parts) >= 5:  # про_month_30d_auto_0 -> 5 частей
-            try:
-                # parts[4] должно быть числом (0 или 1)
-                if parts[4].isdigit():
-                    auto_renew = bool(int(parts[4]))
-                else:
-                    logger.warning(f"Не удалось распарсить auto_renew: parts[4]={parts[4]}")
-            except Exception as e:
-                logger.warning(f"Ошибка парсинга auto_renew: {e}")
-        else:
-            logger.warning(f"Неожиданный формат payload: {payload}")
-
-        if total_amount != PRICE:
-            await message.answer("❌ Некорректная сумма.")
-            return
-        if currency != "RUB":
-            await message.answer("❌ Некорректная валюта.")
+            until = format_pro_until(user.pro_until)
+            await send_pro_activated_message(message, until, auto_renew=False, is_test=False)
             return
 
-        async with AsyncSessionLocal() as db:
-            user = await get_user(db, message.from_user.id)
-            if not user:
-                user = await create_user(db, message.from_user.id, message.from_user.username)
-                city = await get_city_by_name(db, "Красноярск")
-                if city:
-                    user.city_id = city.id
-                    await db.commit()
+        if payload.startswith("pro_month_30d"):
+            # Безопасно извлекаем auto_renew
+            auto_renew = False
+            parts = payload.split("_")
+            if len(parts) >= 5:
+                try:
+                    if parts[4].isdigit():
+                        auto_renew = bool(int(parts[4]))
+                    else:
+                        logger.warning(f"Не удалось распарсить auto_renew: parts[4]={parts[4]}")
+                except Exception as e:
+                    logger.warning(f"Ошибка парсинга auto_renew: {e}")
+            else:
+                logger.warning(f"Неожиданный формат payload: {payload}")
 
-            existing = await get_payment_by_telegram_charge_id(db, telegram_charge_id)
-            if existing:
-                await message.answer("Этот платёж уже был обработан.")
+            if total_amount != PRICE:
+                await message.answer("❌ Некорректная сумма.")
+                return
+            if currency != "RUB":
+                await message.answer("❌ Некорректная валюта.")
                 return
 
-            # Создаём платёж
-            await create_payment(
-                db,
-                user.id,
-                telegram_charge_id,
-                provider_charge_id,
-                total_amount,
-                tariff="pro_month"
-            )
-            # Активируем PRO
+            await create_payment(db, user.id, telegram_charge_id, provider_charge_id, total_amount, tariff="pro_month")
             await activate_pro(db, user, days=30)
             user.auto_renew = auto_renew
             await db.commit()
+            until = format_pro_until(user.pro_until)
+            await send_pro_activated_message(message, until, auto_renew=auto_renew, is_test=False)
+            return
 
-        until = format_pro_until(user.pro_until)
-        await message.answer(
-            f"✅ <b>PRO активирован до {until}</b>\n"
-            f"🔄 Автопродление: {'включено' if auto_renew else 'выключено'}\n\n"
-            "Теперь вы будете получать уведомления о выгодных ценах и появлении топлива.\n"
-            "Спасибо за поддержку!",
-            reply_markup=main_menu_keyboard()
-        )
-        logger.info(f"User {user.telegram_id} активировал PRO до {user.pro_until}, auto_renew={auto_renew}")
-        return
-
-    # ===== ОПЛАТА РУБЛЁМ ДЛЯ ЭКСТРЕННОГО ПОИСКА =====
-    elif payload == "emergency_search_rub":
-        async with AsyncSessionLocal() as db:
-            user = await get_user(db, message.from_user.id)
-            if not user:
-                await message.answer("Сначала /start")
-                return
+        elif payload == "emergency_search_rub":
             await grant_emergency_search(db, user.id)
-        await message.answer(
-            "✅ Оплата прошла успешно! Теперь вы можете использовать экстренный поиск.\n"
-            "Нажмите «🚨 Бензин заканчивается!» и введите адрес.",
-            reply_markup=main_menu_keyboard()
-        )
-        return
+            await message.answer(
+                "✅ Оплата прошла успешно! Теперь вы можете использовать экстренный поиск.\n"
+                "Нажмите «🚨 Бензин заканчивается!» и введите адрес.",
+                reply_markup=main_menu_keyboard()
+            )
+            return
 
-    # Если ничего не подошло
-    await message.answer("⚠️ Неизвестный тип платежа. Обратитесь к администратору.")
+        # Если ничего не подошло
+        await message.answer("⚠️ Неизвестный тип платежа. Обратитесь к администратору.")
+
+
+# ========== НОВАЯ ФУНКЦИЯ ДЛЯ ОТПРАВКИ ЭМОЦИОНАЛЬНОГО СООБЩЕНИЯ ==========
+async def send_pro_activated_message(message: types.Message, until: str, auto_renew: bool, is_test: bool = False):
+    """Отправляет эмоциональное сообщение после активации PRO с кнопками."""
+    if is_test:
+        header = "🧪 Тестовый режим — поздравляю! Вы в клубе PRO"
+        footer = "Это тестовый платёж, все функции активны для проверки."
+    else:
+        header = "✅ Поздравляю! Теперь вы в клубе PRO"
+        footer = ""
+
+    auto_text = "включено" if auto_renew else "выключено"
+
+    text = (
+        f"{header}\n\n"
+        "Вы только что сделали шаг к экономии до 500 ₽ на каждой заправке.\n"
+        "Уведомления о выгодных ценах и появлении топлива уже активированы — вы не пропустите ни одной выгоды.\n\n"
+        "🔔 Ваша первая задача: проверьте, настроены ли уведомления на ваши любимые АЗС.\n"
+        "Нажмите кнопку ниже, чтобы сделать это за 30 секунд.\n\n"
+        "🚗 А если бензин заканчивается прямо сейчас — нажмите «Найти заправку», и я покажу ближайшую АЗС с топливом.\n\n"
+        f"Ваш PRO активен до {until}.\n"
+        f"Автопродление: {auto_text} — вы можете отключить его в любой момент в профиле.\n\n"
+        f"{footer}\n"
+        "Спасибо, что выбрали BinzoLife. Поехали экономить! 💪"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⚙️ Настроить уведомления", callback_data="pro_go_notifications")],
+        [InlineKeyboardButton(text="🚗 Найти заправку", callback_data="pro_go_find")],
+        [InlineKeyboardButton(text="👤 Профиль (управление подпиской)", callback_data="pro_go_profile")]
+    ])
+    await message.answer(text, reply_markup=kb, parse_mode="HTML")
