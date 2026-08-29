@@ -4,8 +4,8 @@ matplotlib.use('Agg')
 import io
 import logging
 import random
-from datetime import datetime, date, timedelta
-from typing import Optional, List, Union
+from datetime import datetime, timedelta
+from typing import Optional, List
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
@@ -52,7 +52,7 @@ def generate_fuel_price_chart(
     # 1. Геометрия холста (вертикальный 9:16)
     figsize = (7.5, 13.33) if aspect_ratio == "9:16" else (8.0, 10.66)
     
-    # 2. Цветовая палитра Fintech Pro
+    # 2. Цветовая палитра Fintech Pro (используем hex, а не rgba)
     BG_COLOR = "#090D16"
     CARD_BG = "#131D2E"
     PRIMARY_COLOR = "#0284C7"
@@ -62,10 +62,12 @@ def generate_fuel_price_chart(
     MAX_COLOR = "#F87171"
     TEXT_MAIN = "#F8FAFC"
     TEXT_MUTED = "#94A3B8"
-    GRID_COLOR = "rgba(51, 65, 85, 0.45)"
+    GRID_COLOR = "#334155"   # hex вместо rgba
 
+    # Шрифты
     plt.rcParams['font.family'] = 'sans-serif'
     plt.rcParams['font.sans-serif'] = ['Plus Jakarta Sans', 'Inter', 'DejaVu Sans', 'Arial', 'Liberation Sans']
+    # Исправлено: правильное имя параметра — axes.edgecolor (без опечатки)
     plt.rcParams['axes.edgecolor'] = GRID_COLOR
     plt.rcParams['axes.linewidth'] = 1.0
 
@@ -188,7 +190,6 @@ def generate_fuel_price_chart(
     delta_symbol = "▲ +" if is_up else ("▼ " if is_down else "— ")
     delta_str = f"{delta_symbol}{price_change:+.2f} {currency} ({pct_change:+.1f}%)"
 
-    # Если это демо-данные, добавим пометку
     demo_label = " [ДЕМО]" if is_demo else ""
     fig.text(0.12, 0.95, f"⛽ {station_name}{demo_label}", fontsize=14, fontweight='bold', color=TEXT_MAIN, va='top')
     fig.text(0.12, 0.925, f"Динамика {fuel_type} за {len(dates)} дней • {dates[0].strftime('%d.%m')} — {dates[-1].strftime('%d.%m.%Y')}", fontsize=9, color=TEXT_MUTED, va='top')
@@ -242,16 +243,14 @@ async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int =
         # Если данных нет или force_demo=True – создаём демо-данные
         if force_demo or not history or len(history) < 2:
             logger.info(f"Создаём демо-данные для station_id={station_id}")
-            # Генерируем 30 дней назад от сегодня
             end_date = datetime.now()
             start_date = end_date - timedelta(days=30)
             dates = [start_date + timedelta(days=i) for i in range(31)]
-            # Цены: начинаем с 68, постепенно растут до 75 с колебаниями
             base_price = 68.0
             prices = []
             for i in range(31):
-                trend = i * 0.15  # постепенный рост
-                noise = random.uniform(-0.8, 0.8)  # случайные колебания
+                trend = i * 0.15
+                noise = random.uniform(-0.8, 0.8)
                 price = base_price + trend + noise
                 prices.append(round(price, 2))
             is_demo = True
@@ -265,7 +264,6 @@ async def generate_price_graph(station_id: int, fuel_type: FuelType, days: int =
             filtered = [(d, p) for d, p in zip(dates, prices) if 0 < p < 200]
             if not filtered:
                 logger.warning(f"Все цены аномальны для station_id={station_id}, переключаемся на демо")
-                # Рекурсивно вызываем с force_demo=True
                 return await generate_price_graph(station_id, fuel_type, days, force_demo=True)
             dates, prices = zip(*filtered)
             is_demo = False
