@@ -1312,3 +1312,12 @@ async def get_marketing_stats(db: AsyncSession) -> dict:
         "ltv": ltv,
         "conversion_search_to_pro": conversion_search_to_pro,
     }
+async def aggregate_old_prices(db: AsyncSession, days_threshold: int = 60):
+    """Схлопывает цены старше days_threshold дней (удаляет для экономии места)."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days_threshold)
+    # Удаляем старые записи, чтобы БД не разрасталась
+    deleted = await db.execute(
+        delete(FuelPrice).where(FuelPrice.recorded_at < cutoff)
+    )
+    await db.commit()
+    logger.info(f"Удалено {deleted.rowcount} старых записей цен (старше {days_threshold} дней)")
