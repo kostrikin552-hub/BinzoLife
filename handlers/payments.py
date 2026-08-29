@@ -179,6 +179,10 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
             return
         await pre_checkout.answer(ok=True)
     elif payload == "test_payment_payload":
+        # Разрешаем только администраторам
+        if pre_checkout.from_user.id not in settings.admin_ids:
+            await pre_checkout.answer(ok=False, error_message="Тестовый платёж доступен только администраторам")
+            return
         if pre_checkout.currency != "RUB":
             await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
             return
@@ -244,6 +248,10 @@ async def successful_payment(message: types.Message):
     logger.info(f"Получен успешный платёж: payload={payload}, currency={currency}, amount={total_amount}")
 
     if payload == "test_payment_payload":
+        # Разрешаем только администраторам
+        if message.from_user.id not in settings.admin_ids:
+            await message.answer("⛔ Тестовый платёж доступен только администраторам.")
+            return
         async with AsyncSessionLocal() as db:
             user = await get_user(db, message.from_user.id)
             if not user:
@@ -294,7 +302,6 @@ async def successful_payment(message: types.Message):
                 await message.answer("Этот платёж уже был обработан.")
                 return
             await create_payment(db, user.id, telegram_charge_id, provider_charge_id, total_amount, currency="XTR", tariff="pro_month")
-            # Сложение дней
             now = datetime.now(timezone.utc)
             if user.pro_until and user.pro_until > now:
                 new_until = user.pro_until + timedelta(days=30)
@@ -337,7 +344,6 @@ async def successful_payment(message: types.Message):
                 return
 
             await create_payment(db, user.id, telegram_charge_id, provider_charge_id, total_amount, tariff="pro_month")
-            # Сложение дней
             now = datetime.now(timezone.utc)
             if user.pro_until and user.pro_until > now:
                 new_until = user.pro_until + timedelta(days=30)
