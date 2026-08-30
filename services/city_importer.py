@@ -13,7 +13,7 @@ from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
     get_or_create_city, get_stations_by_city, get_city_slug
 )
-from database.models import FuelType, SourceType, FuelPrice
+from database.models import FuelType, SourceType, FuelPrice, Station, City  # <-- ДОБАВЛЕН Station
 from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
