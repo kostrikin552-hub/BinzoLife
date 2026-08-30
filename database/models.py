@@ -64,6 +64,12 @@ class Station(Base):
     prices = relationship("FuelPrice", back_populates="station")
     availability = relationship("AvailabilityReport", back_populates="station")
 
+    # Индексы для быстрого поиска по городу
+    __table_args__ = (
+        Index("ix_stations_city_id", "city_id"),
+        Index("ix_stations_lat_lon", "latitude", "longitude"),
+    )
+
 class FuelPrice(Base):
     __tablename__ = "fuel_prices"
     id = Column(Integer, primary_key=True)
@@ -78,7 +84,9 @@ class FuelPrice(Base):
     station = relationship("Station", back_populates="prices")
 
     __table_args__ = (
-        Index("idx_prices_station_fuel", "station_id", "fuel_type"),
+        Index("idx_prices_station_fuel_date", "station_id", "fuel_type", "recorded_at"),  # составной для графиков
+        Index("idx_prices_station_id", "station_id"),
+        Index("idx_prices_fuel_type", "fuel_type"),
     )
 
 class AvailabilityReport(Base):
@@ -97,6 +105,12 @@ class AvailabilityReport(Base):
 
     station = relationship("Station", back_populates="availability")
     user = relationship("User", back_populates="reports")
+
+    __table_args__ = (
+        Index("ix_availability_station_id", "station_id"),
+        Index("ix_availability_user_id", "user_id"),
+        Index("ix_availability_station_fuel", "station_id", "fuel_type"),
+    )
 
 class User(Base):
     __tablename__ = "users"
@@ -121,10 +135,8 @@ class User(Base):
     trial_started = Column(DateTime(timezone=True), nullable=True)
     silent_hours_start = Column(Integer, nullable=True)
     silent_hours_end = Column(Integer, nullable=True)
-
-    # НОВЫЕ ПОЛЯ ДЛЯ БЕСПЛАТНЫХ ПОИСКОВ
-    free_searches_today = Column(Integer, default=1)          # сколько осталось на сегодня
-    last_free_search_date = Column(Date, nullable=True)       # дата последнего использования
+    free_searches_today = Column(Integer, default=1)
+    last_free_search_date = Column(Date, nullable=True)
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
@@ -133,6 +145,12 @@ class User(Base):
     reviews = relationship("Review", back_populates="user")
     achievements = relationship("UserAchievement", back_populates="user")
     economies = relationship("UserEconomy", back_populates="user")
+
+    __table_args__ = (
+        Index("ix_users_telegram_id", "telegram_id"),
+        Index("ix_users_city_id", "city_id"),
+        Index("ix_users_is_pro", "is_pro"),
+    )
 
 class Notification(Base):
     __tablename__ = "notifications"
@@ -151,6 +169,12 @@ class Notification(Base):
     user = relationship("User", back_populates="notifications")
     station = relationship("Station")
 
+    __table_args__ = (
+        Index("ix_notifications_user_id", "user_id"),
+        Index("ix_notifications_station_id", "station_id"),
+        Index("ix_notifications_active", "active"),
+    )
+
 class UserAction(Base):
     __tablename__ = "user_actions"
     id = Column(Integer, primary_key=True)
@@ -161,11 +185,17 @@ class UserAction(Base):
 
     user = relationship("User")
 
+    __table_args__ = (
+        Index("ix_user_actions_user_id", "user_id"),
+        Index("ix_user_actions_action", "action"),
+        Index("ix_user_actions_recorded_at", "recorded_at"),
+    )
+
 class Payment(Base):
     __tablename__ = "payments"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    telegram_payment_charge_id = Column(String(100), unique=True, nullable=False)
+    telegram_payment_charge_id = Column(String(100), unique=True, nullable=False)  # уникальный индекс
     provider_payment_charge_id = Column(String(100), nullable=True)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), nullable=False, default="RUB")
@@ -175,6 +205,11 @@ class Payment(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="payments")
+
+    __table_args__ = (
+        Index("ix_payments_user_id", "user_id"),
+        Index("ix_payments_telegram_charge_id", "telegram_payment_charge_id", unique=True),  # дополнительно
+    )
 
 class Review(Base):
     __tablename__ = "reviews"
@@ -186,6 +221,11 @@ class Review(Base):
 
     user = relationship("User", back_populates="reviews")
 
+    __table_args__ = (
+        Index("ix_reviews_user_id", "user_id"),
+        Index("ix_reviews_created_at", "created_at"),
+    )
+
 class UserAchievement(Base):
     __tablename__ = "user_achievements"
     id = Column(Integer, primary_key=True)
@@ -195,6 +235,10 @@ class UserAchievement(Base):
     bonus_days_granted = Column(Integer, default=0)
 
     user = relationship("User", back_populates="achievements")
+
+    __table_args__ = (
+        Index("ix_user_achievements_user_id", "user_id"),
+    )
 
 class Referral(Base):
     __tablename__ = "referrals"
@@ -206,6 +250,11 @@ class Referral(Base):
 
     referrer = relationship("User", foreign_keys=[referrer_id])
     referred = relationship("User", foreign_keys=[referred_user_id])
+
+    __table_args__ = (
+        Index("ix_referrals_referrer_id", "referrer_id"),
+        Index("ix_referrals_referred_user_id", "referred_user_id"),
+    )
 
 class UserEconomy(Base):
     __tablename__ = "user_economies"
@@ -220,6 +269,12 @@ class UserEconomy(Base):
     user = relationship("User", back_populates="economies")
     station = relationship("Station")
 
+    __table_args__ = (
+        Index("ix_user_economies_user_id", "user_id"),
+        Index("ix_user_economies_station_id", "station_id"),
+        Index("ix_user_economies_recorded_at", "recorded_at"),
+    )
+
 class GeocodeCache(Base):
     __tablename__ = 'geocode_cache'
     id = Column(Integer, primary_key=True)
@@ -228,7 +283,10 @@ class GeocodeCache(Base):
     address = Column(String(500), nullable=False)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    __table_args__ = (UniqueConstraint('lat', 'lng', name='uq_lat_lng'),)
+    __table_args__ = (
+        UniqueConstraint('lat', 'lng', name='uq_lat_lng'),
+        Index('ix_geocode_cache_lat_lng', 'lat', 'lng'),
+    )
 
 class ProNotificationSent(Base):
     __tablename__ = "pro_notifications_sent"
@@ -237,6 +295,9 @@ class ProNotificationSent(Base):
     notification_type = Column(String(20), nullable=False)  # '3d', '2d', '1d', '3h', '1h'
     sent_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    __table_args__ = (UniqueConstraint('user_id', 'notification_type', name='uq_user_notif_type'),)
+    __table_args__ = (
+        UniqueConstraint('user_id', 'notification_type', name='uq_user_notif_type'),
+        Index('ix_pro_notifications_sent_user_id', 'user_id'),
+    )
 
     user = relationship("User")
