@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.session import AsyncSessionLocal
-from database.crud import get_user, create_user, get_city_by_name, apply_referral
+from database.crud import get_user, create_user, get_city_by_name, apply_referral, activate_trial
 from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popular_cities_keyboard, main_menu_keyboard
 
 router = Router()
@@ -89,19 +89,21 @@ async def process_start(message: types.Message, state: FSMContext):
                 user.city_id = city.id
                 await db.commit()
 
-            # --- УПРОЩЁННЫЙ ОНБОРДИНГ: 1-Click Flow ---
+            # ===== НОВОЕ ПРИВЕТСТВИЕ =====
             await message.answer(
-                "🚗 **BinzoLife** — экономь на топливе до 500 ₽ за поездку\n\n"
-                "Я покажу ближайшие АЗС с самыми низкими ценами и подтверждённым наличием топлива.\n"
-                "Тысячи водителей уже экономят со мной.\n\n"
-                "👉 Нажми кнопку ниже, чтобы найти заправку прямо сейчас.",
+                "👋 Привет! Я бот **BinzoLife** — твой личный топливный ассистент.\n\n"
+                "⛽ Я покажу самые выгодные заправки в твоём городе с учётом расхода на дорогу.\n"
+                "💰 В среднем пользователи экономят **от 300 до 800 ₽ с каждого бака**!\n\n"
+                "🎁 **Бонус:** ты получаешь **3 дня PRO** бесплатно при первом поиске.\n\n"
+                "👇 Нажми кнопку, чтобы начать экономить:",
                 reply_markup=welcome_back_keyboard(),
-                parse_mode="HTML"
+                parse_mode="Markdown"
             )
             return
 
         # Существующий пользователь
         if user.city_id:
+            # Приветствие для возвращающихся
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
                 "💰 Экономь до 500 ₽ за раз и не стой в очередях.",
