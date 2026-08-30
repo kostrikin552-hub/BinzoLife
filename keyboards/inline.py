@@ -50,9 +50,12 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
-    yandex_url = f"https://yandex.ru/maps/?pt={lon},{lat}&z=15"
+    # === КНОПКИ НАВИГАТОРА ===
     buttons = [
-        [InlineKeyboardButton(text="🗺 Маршрут", url=yandex_url)]
+        [
+            InlineKeyboardButton(text="🚗 Яндекс Навигатор", url=f"https://yandex.ru/maps/?pt={lon},{lat}&z=15&rtt=auto"),
+            InlineKeyboardButton(text="🗺 2ГИС", url=f"https://2gis.ru/geo/{lon},{lat}")
+        ]
     ]
     buttons.append([InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}")])
     buttons.append([InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")])
@@ -69,7 +72,6 @@ def station_action_keyboard(station_id: int, price: float, availability, lat: fl
         map_url = f"https://yandex.ru/maps/?mode=search&text=АЗС&ll={lon},{lat}&z=13"
         buttons.append([InlineKeyboardButton(text="🗺 Показать все АЗС на карте", url=map_url)])
 
-    # КНОПКА ГЛАВНОГО МЕНЮ
     buttons.append([InlineKeyboardButton(text="◀️ Главное меню", callback_data="back_to_menu")])
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -80,9 +82,12 @@ def notification_action_keyboard(notif_id: int):
     ])
 
 def pro_purchase_keyboard():
+    # Используется при paywall – можно расширить
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить 99 ₽", callback_data="buy_pro")],
-        [InlineKeyboardButton(text="⭐ Оплатить 150 Stars", callback_data="buy_pro_stars")]
+        [InlineKeyboardButton(text="💳 29 ₽ / 24ч", callback_data="buy_tariff_pro_24h"),
+         InlineKeyboardButton(text="💳 99 ₽ / мес", callback_data="buy_tariff_pro_1m")],
+        [InlineKeyboardButton(text="💳 249 ₽ / 3 мес", callback_data="buy_tariff_pro_3m")],
+        [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data="buy_pro_stars")]
     ])
 
 def emergency_payment_keyboard():
