@@ -1,25 +1,16 @@
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.session import AsyncSessionLocal
 from database.crud import get_user, create_user, get_city_by_name, apply_referral
-from keyboards.inline import (
-    welcome_back_keyboard,
-    city_choice_keyboard,
-    popular_cities_keyboard,
-    main_menu_keyboard
-)
+from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popular_cities_keyboard, main_menu_keyboard
 
 router = Router()
 
 CHANNEL_ID = -1004398885383
 CHANNEL_LINK = "https://t.me/BinzoLife_News"
-
-class SubscribeStates(StatesGroup):
-    waiting_subscribe = State()
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -27,10 +18,9 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
+    # Проверка подписки на канал
     is_subscribed = await check_subscription(message.bot, user_id)
-
     if not is_subscribed:
-        await state.set_state(SubscribeStates.waiting_subscribe)
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_LINK)],
             [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscribe")]
@@ -46,11 +36,10 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
     await process_start(message, state)
 
-@router.callback_query(F.data == "check_subscribe", SubscribeStates.waiting_subscribe)
+@router.callback_query(F.data == "check_subscribe")
 async def check_subscribe(callback: types.CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     is_subscribed = await check_subscription(callback.bot, user_id)
-
     if is_subscribed:
         await callback.message.delete()
         await callback.message.answer("✅ Спасибо! Теперь вы можете пользоваться ботом.")
@@ -78,6 +67,8 @@ async def process_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
+    # Реферальный код
+    ref_code = None
     if len(args) > 1:
         if args[1].startswith("ref_"):
             ref_code = args[1][4:]
@@ -85,16 +76,11 @@ async def process_start(message: types.Message, state: FSMContext):
             from handlers.payments import show_pro_info
             await show_pro_info(message)
             return
-        else:
-            ref_code = None
-    else:
-        ref_code = None
 
     async with AsyncSessionLocal() as db:
-        # ИСПРАВЛЕНИЕ: проверяем существование пользователя до обработки реферала
         user = await get_user(db, user_id)
         if not user:
-            # Только НОВЫЙ пользователь может активировать реферал
+            # Новый пользователь
             user = await create_user(db, user_id, username)
             if ref_code:
                 await apply_referral(db, user.id, ref_code)
@@ -103,18 +89,18 @@ async def process_start(message: types.Message, state: FSMContext):
                 user.city_id = city.id
                 await db.commit()
 
+            # --- УПРОЩЁННЫЙ ОНБОРДИНГ: 1-Click Flow ---
             await message.answer(
-                "📖 **BinzoLife за 3 шага:**\n\n"
-                "1. Нажми «Найти заправку» → выбери топливо → получи АЗС с ценой, наличием и маршрутом.\n"
-                "2. В критической ситуации нажми «Бензин заканчивается!» — я найду топливо за 10 секунд.\n"
-                "3. Подключи PRO, чтобы получать уведомления о снижении цен и не упускать выгоду.\n\n"
-                "💰 Экономь до 500 ₽ за заправку. Начни сейчас → «Найти заправку».",
+                "🚗 **BinzoLife** — экономь на топливе до 500 ₽ за поездку\n\n"
+                "Я покажу ближайшие АЗС с самыми низкими ценами и подтверждённым наличием топлива.\n"
+                "Тысячи водителей уже экономят со мной.\n\n"
+                "👉 Нажми кнопку ниже, чтобы найти заправку прямо сейчас.",
                 reply_markup=welcome_back_keyboard(),
                 parse_mode="HTML"
             )
             return
 
-        # Если пользователь уже существует, реферал игнорируется
+        # Существующий пользователь
         if user.city_id:
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
@@ -123,14 +109,10 @@ async def process_start(message: types.Message, state: FSMContext):
             )
             return
 
+        # Если город не выбран
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
-            "Я знаю, где прямо сейчас есть 95-й бензин, по какой цене и сколько до него ехать.\n\n"
             "Сэкономь до 500 ₽ на одной заправке и забудь про очереди.\n\n"
-            "Что я умею:\n"
-            "✅ Найти ближайшую АЗС с топливом (даже в час пик)\n"
-            "✅ Показать самую дешёвую цену в твоём районе\n"
-            "✅ Построить маршрут за 1 клик\n\n"
             "📍 Для начала выбери свой город:",
             reply_markup=city_choice_keyboard()
         )
