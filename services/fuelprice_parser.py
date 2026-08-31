@@ -1,5 +1,3 @@
-# services/fuelprice_parser.py – ИСПРАВЛЕННАЯ ВЕРСИЯ (закрытие aiohttp-сессии)
-
 import aiohttp
 import asyncio
 import logging
@@ -44,6 +42,22 @@ BRAND_KEYWORDS = [
     'СКОН', 'Varta'
 ]
 
+# ===== КАРТА ТОПЛИВА ДЛЯ ПАРСИНГА =====
+FUEL_TYPE_MAP = {
+    "Аи-92": FuelType.AI_92,
+    "АИ-92": FuelType.AI_92,
+    "Аи-95": FuelType.AI_95,
+    "АИ-95": FuelType.AI_95,
+    "Аи-98": FuelType.AI_98,
+    "АИ-98": FuelType.AI_98,
+    "Аи-100": FuelType.AI_100,
+    "АИ-100": FuelType.AI_100,
+    "ДТ": FuelType.DT,
+    "ДТ-З": FuelType.DT,
+    "ДТ-Е": FuelType.DT,
+}
+# =====================================
+
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
     async with AsyncSessionLocal() as db:
@@ -75,7 +89,6 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
         for attempt in range(retries + 1):
             try:
                 logger.info(f"Попытка {attempt+1}/{retries+1} для {city_name}, URL: {url}")
-                # Используем async with для автоматического закрытия сессии
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.get(url, headers=headers) as resp:
                         if resp.status != 200:
@@ -84,14 +97,13 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         html = await resp.text()
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
-                # Сессия закрыта, работаем с html
                 # ---- JS-массивы (основной метод) ----
                 pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
                 matches = pattern.findall(html)
                 if matches:
                     logger.info(f"Найдены JS-массивы для {city_name}")
                     updated_count = 0
-                    updates = []
+                    updates = []  # (station, fuel_type, price)
                     for match in matches:
                         try:
                             lat = float(match[0])
@@ -104,19 +116,35 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             clean_name = normalize_name(raw_name)
                             clean_addr = clean_address(raw_address, max_length=255)
 
-                            price = None
-                            if 'Аи-95' in fuel_data or 'АИ-95' in fuel_data:
-                                p_match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', fuel_data)
-                                if p_match:
-                                    price = float(p_match.group(1).replace(',', '.'))
-                            if not price and price_str:
+                            # ---- Ищем цены для ВСЕХ видов топлива ----
+                            prices_by_fuel = {}
+                            # Сначала пробуем извлечь из fuel_data (обычно там несколько топлив)
+                            if fuel_data:
+                                # Ищем все марки топлива в строке
+                                for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
+                                    pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                                    match_price = pattern.search(fuel_data)
+                                    if match_price:
+                                        try:
+                                            price = float(match_price.group(1).replace(',', '.'))
+                                            if is_valid_price(price):
+                                                prices_by_fuel[fuel_type] = price
+                                        except:
+                                            pass
+                            # Если fuel_data пустой или не нашлось, пробуем взять общую цену из price_str
+                            if not prices_by_fuel and price_str:
                                 try:
                                     price = float(price_str.replace(',', '.'))
+                                    if is_valid_price(price):
+                                        # Предполагаем, что это АИ-95 (по умолчанию)
+                                        prices_by_fuel[FuelType.AI_95] = price
                                 except:
                                     pass
-                            if not price or not is_valid_price(price):
+
+                            if not prices_by_fuel:
                                 continue
 
+                            # Ищем станцию
                             station = None
                             for s in stations:
                                 dist = haversine_distance(lat, lon, s.latitude, s.longitude)
@@ -141,6 +169,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 logger.debug(f"Не найдена станция для '{raw_name}' — пропускаем")
                                 continue
 
+                            # Обновляем поля станции
                             if clean_name and station.name != clean_name:
                                 station.name = clean_name
                             if clean_addr and station.address != clean_addr:
@@ -148,27 +177,30 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             if lat != 0.0 and lon != 0.0:
                                 station.latitude = lat
                                 station.longitude = lon
-                            updates.append((station, price))
-                            updated_count += 1
-                            logger.info(f"Обновлено: {station.name}, цена {price} ₽, координаты {lat},{lon}")
+
+                            # Сохраняем цены для всех найденных типов топлива
+                            for fuel_type, price in prices_by_fuel.items():
+                                updates.append((station, fuel_type, price))
+                                updated_count += 1
+                                logger.info(f"Обновлено: {station.name}, {fuel_type.value} = {price} ₽, координаты {lat},{lon}")
 
                         except Exception as e:
                             logger.error(f"Ошибка обработки блока: {e}")
                             continue
 
                     if updates:
-                        for station, price in updates:
+                        for station, fuel_type, price in updates:
                             await save_price(
                                 db,
                                 station.id,
-                                FuelType.AI_95,
+                                fuel_type,
                                 price,
                                 SourceType.PARSER,
                                 confidence=0.7,
                                 recorded_at=datetime.now(timezone.utc)
                             )
                         await db.commit()
-                    logger.info(f"Обновлено {updated_count} станций в {city_name}")
+                    logger.info(f"Обновлено {updated_count} цен в {city_name}")
                     return
 
                 # ---- Fallback: BeautifulSoup ----
@@ -177,7 +209,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                 updated_count = 0
                 current_name = None
                 current_address = None
-                current_price = None
+                current_prices = {}  # fuel_type -> price
 
                 for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
                     text = elem.get_text(strip=True)
@@ -186,7 +218,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     is_brand = any(b in text for b in BRAND_KEYWORDS)
                     if is_brand and len(text) < 150:
-                        if current_name and current_price is not None and is_valid_price(current_price):
+                        if current_name and current_prices:
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
                                 clean_name = normalize_name(current_name)
@@ -195,12 +227,13 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                     station.name = clean_name
                                 if clean_addr and station.address != clean_addr:
                                     station.address = clean_addr
-                                await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
-                                updated_count += 1
-                                logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
+                                for fuel_type, price in current_prices.items():
+                                    await save_price(db, station.id, fuel_type, price, SourceType.PARSER, confidence=0.7)
+                                    updated_count += 1
+                                    logger.info(f"Обновлено (BS4): {station.name}, {fuel_type.value} = {price} ₽")
                         current_name = text
                         current_address = None
-                        current_price = None
+                        current_prices = {}
                         continue
 
                     if current_name and not current_address:
@@ -209,29 +242,37 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             continue
 
                     if current_name:
-                        match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', text)
-                        if match:
-                            try:
-                                current_price = float(match.group(1).replace(',', '.'))
-                                if is_valid_price(current_price):
-                                    station = await find_station(db, stations, current_name, current_address, None, None)
-                                    if station:
-                                        clean_name = normalize_name(current_name)
-                                        clean_addr = clean_address(current_address, max_length=255) if current_address else ""
-                                        if clean_name and station.name != clean_name:
-                                            station.name = clean_name
-                                        if clean_addr and station.address != clean_addr:
-                                            station.address = clean_addr
-                                        await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
-                                        updated_count += 1
-                                        logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
-                                current_name = None
-                                current_address = None
-                                current_price = None
-                            except ValueError:
-                                pass
+                        # Ищем цены для всех видов топлива
+                        for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
+                            pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                            match_price = pattern.search(text)
+                            if match_price:
+                                try:
+                                    price = float(match_price.group(1).replace(',', '.'))
+                                    if is_valid_price(price):
+                                        current_prices[fuel_type] = price
+                                except:
+                                    pass
 
-                if current_name and current_price is not None and is_valid_price(current_price):
+                        # Если нашли хоть одну цену, сохраняем и сбрасываем
+                        if current_prices:
+                            station = await find_station(db, stations, current_name, current_address, None, None)
+                            if station:
+                                clean_name = normalize_name(current_name)
+                                clean_addr = clean_address(current_address, max_length=255) if current_address else ""
+                                if clean_name and station.name != clean_name:
+                                    station.name = clean_name
+                                if clean_addr and station.address != clean_addr:
+                                    station.address = clean_addr
+                                for fuel_type, price in current_prices.items():
+                                    await save_price(db, station.id, fuel_type, price, SourceType.PARSER, confidence=0.7)
+                                    updated_count += 1
+                                    logger.info(f"Обновлено (BS4): {station.name}, {fuel_type.value} = {price} ₽")
+                            current_name = None
+                            current_address = None
+                            current_prices = {}
+
+                if current_name and current_prices:
                     station = await find_station(db, stations, current_name, current_address, None, None)
                     if station:
                         clean_name = normalize_name(current_name)
@@ -240,13 +281,14 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             station.name = clean_name
                         if clean_addr and station.address != clean_addr:
                             station.address = clean_addr
-                        await save_price(db, station.id, FuelType.AI_95, current_price, SourceType.PARSER, confidence=0.7)
-                        updated_count += 1
-                        logger.info(f"Обновлено (BS4): {station.name}, цена {current_price} ₽")
+                        for fuel_type, price in current_prices.items():
+                            await save_price(db, station.id, fuel_type, price, SourceType.PARSER, confidence=0.7)
+                            updated_count += 1
+                            logger.info(f"Обновлено (BS4): {station.name}, {fuel_type.value} = {price} ₽")
 
                 if updated_count:
                     await db.commit()
-                logger.info(f"Обновлено {updated_count} станций в {city_name} (BS4)")
+                logger.info(f"Обновлено {updated_count} цен в {city_name} (BS4)")
                 return
 
             except asyncio.TimeoutError:
