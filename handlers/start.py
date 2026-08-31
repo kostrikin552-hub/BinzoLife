@@ -18,7 +18,6 @@ async def cmd_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
-    # Проверка подписки на канал
     is_subscribed = await check_subscription(message.bot, user_id)
     if not is_subscribed:
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -67,7 +66,6 @@ async def process_start(message: types.Message, state: FSMContext):
     user_id = message.from_user.id
     username = message.from_user.username
 
-    # Реферальный код
     ref_code = None
     if len(args) > 1:
         if args[1].startswith("ref_"):
@@ -80,7 +78,6 @@ async def process_start(message: types.Message, state: FSMContext):
     async with AsyncSessionLocal() as db:
         user = await get_user(db, user_id)
         if not user:
-            # Новый пользователь
             user = await create_user(db, user_id, username)
             if ref_code:
                 await apply_referral(db, user.id, ref_code)
@@ -89,9 +86,8 @@ async def process_start(message: types.Message, state: FSMContext):
                 user.city_id = city.id
                 await db.commit()
 
-            # ===== НОВОЕ ПРИВЕТСТВИЕ =====
             await message.answer(
-                "👋 Привет! Я бот **BinzoLife** — твой личный топливный ассистент.\n\n"
+                "👋 Привет! Я **BinzoLife** — твой личный топливный ассистент.\n\n"
                 "⛽ Я покажу самые выгодные заправки в твоём городе с учётом расхода на дорогу.\n"
                 "💰 В среднем пользователи экономят **от 300 до 800 ₽ с каждого бака**!\n\n"
                 "🎁 **Бонус:** ты получаешь **3 дня PRO** бесплатно при первом поиске.\n\n"
@@ -101,9 +97,7 @@ async def process_start(message: types.Message, state: FSMContext):
             )
             return
 
-        # Существующий пользователь
         if user.city_id:
-            # Приветствие для возвращающихся
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
                 "💰 Экономь до 500 ₽ за раз и не стой в очередях.",
@@ -111,7 +105,6 @@ async def process_start(message: types.Message, state: FSMContext):
             )
             return
 
-        # Если город не выбран
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
             "Сэкономь до 500 ₽ на одной заправке и забудь про очереди.\n\n"
@@ -119,7 +112,6 @@ async def process_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
-# ---------- Обработчики выбора города ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
