@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 router = Router()
 logger = logging.getLogger(__name__)
 
-# ===== НОВАЯ ТАРИФНАЯ СЕТКА =====
+# ===== ТАРИФНАЯ СЕТКА =====
 TARIFFS = {
     "pro_24h": {
         "title": "⚡ PRO на 24 часа (Поездка)",
@@ -105,7 +105,6 @@ async def buy_tariff(callback: types.CallbackQuery):
         await callback.answer("Тариф не найден")
         return
 
-    # Отправляем инвойс
     prices = [LabeledPrice(label=tariff["title"], amount=tariff["price_rub"] * 100)]
     try:
         await callback.message.answer_invoice(
@@ -122,10 +121,16 @@ async def buy_tariff(callback: types.CallbackQuery):
         logger.error(f"Ошибка создания инвойса: {e}")
         await callback.message.answer("❌ Не удалось создать платёж")
 
+# ===== ОБРАБОТЧИК ДЛЯ СТАРЫХ КНОПОК "Купить PRO" =====
+@router.callback_query(F.data == "buy_pro")
+async def buy_pro_legacy(callback: types.CallbackQuery):
+    """Обработчик старых кнопок 'Купить PRO' — перенаправляет на новые тарифы."""
+    await callback.answer()
+    await show_pro_info(callback.message)
+
 @router.callback_query(F.data == "buy_pro_stars")
 async def buy_pro_stars(callback: types.CallbackQuery):
     await callback.answer()
-    # Отправляем инвойс на 1 месяц за Stars (можно расширить, но для простоты пока 1 мес)
     tariff = TARIFFS["pro_1m"]
     prices = [LabeledPrice(label=tariff["title"], amount=tariff["price_stars"])]
     try:
@@ -149,57 +154,35 @@ async def pre_checkout_query(pre_checkout: PreCheckoutQuery):
         await pre_checkout.answer(ok=False, error_message="Некорректный платёж")
         return
 
+    all_ok = False
     if payload.startswith("pro_"):
-        # pro_pro_24h, pro_pro_1m, pro_pro_3m
         tariff_id = payload.split("_")[1] + "_" + payload.split("_")[2]
         tariff = TARIFFS.get(tariff_id)
-        if not tariff:
-            await pre_checkout.answer(ok=False, error_message="Тариф не найден")
-            return
-        if pre_checkout.total_amount != tariff["price_rub"] * 100:
-            await pre_checkout.answer(ok=False, error_message="Некорректная сумма")
-            return
-        if pre_checkout.currency != "RUB":
-            await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
-            return
-        await pre_checkout.answer(ok=True)
-
+        if tariff and pre_checkout.total_amount == tariff["price_rub"] * 100 and pre_checkout.currency == "RUB":
+            all_ok = True
     elif payload == "pro_month_stars":
         tariff = TARIFFS["pro_1m"]
-        if pre_checkout.total_amount != tariff["price_stars"]:
-            await pre_checkout.answer(ok=False, error_message="Некорректное количество Stars")
-            return
-        if pre_checkout.currency != "XTR":
-            await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
-            return
-        await pre_checkout.answer(ok=True)
-
+        if pre_checkout.total_amount == tariff["price_stars"] and pre_checkout.currency == "XTR":
+            all_ok = True
     elif payload == "emergency_search_rub":
-        if pre_checkout.total_amount != 50 * 100:
-            await pre_checkout.answer(ok=False, error_message="Некорректная сумма")
-            return
-        if pre_checkout.currency != "RUB":
-            await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
-            return
-        await pre_checkout.answer(ok=True)
-
+        if pre_checkout.total_amount == 50 * 100 and pre_checkout.currency == "RUB":
+            all_ok = True
     elif payload == "emergency_search_stars":
-        if pre_checkout.total_amount != 50:
-            await pre_checkout.answer(ok=False, error_message="Некорректное количество Stars")
-            return
-        if pre_checkout.currency != "XTR":
-            await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
-            return
-        await pre_checkout.answer(ok=True)
-
+        if pre_checkout.total_amount == 50 and pre_checkout.currency == "XTR":
+            all_ok = True
     elif payload == "test_payment_payload":
-        if pre_checkout.currency != "RUB":
-            await pre_checkout.answer(ok=False, error_message="Некорректная валюта")
-            return
-        await pre_checkout.answer(ok=True)
+        if pre_checkout.currency == "RUB":
+            all_ok = True
 
-    else:
-        await pre_checkout.answer(ok=False, error_message="Неизвестный тип платежа")
+    if not all_ok:
+        await pre_checkout.answer(ok=False, error_message="Платёж не прошёл. Попробуйте другой способ.")
+        # Отправляем сообщение через бота
+        await pre_checkout.bot.send_message(
+            chat_id=pre_checkout.from_user.id,
+            text="❌ Платёж был отменён или не прошёл. Если у вас возникли вопросы, обратитесь в поддержку: @BinzoLife_Support"
+        )
+        return
+    await pre_checkout.answer(ok=True)
 
 @router.callback_query(F.data == "pro_go_find")
 async def pro_go_find(callback: types.CallbackQuery):
@@ -325,7 +308,6 @@ async def successful_payment(message: types.Message):
             return
 
     if payload.startswith("pro_"):
-        # pro_pro_24h, pro_pro_1m, pro_pro_3m
         tariff_id = payload.split("_")[1] + "_" + payload.split("_")[2]
         tariff = TARIFFS.get(tariff_id)
         if not tariff:
@@ -361,7 +343,6 @@ async def successful_payment(message: types.Message):
                     new_until = now + timedelta(days=tariff["days"])
                 user.is_pro = True
                 user.pro_until = new_until
-                # auto_renew не задаём для простоты
             await send_pro_activated_message(message, new_until.strftime("%d.%m.%Y %H:%M"), auto_renew=False, is_test=False)
             return
 
