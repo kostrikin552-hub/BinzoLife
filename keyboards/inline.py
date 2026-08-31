@@ -50,11 +50,10 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
+    nav_url = f"https://yandex.ru/maps/?rtext=~{lat},{lon}&rtt=auto"
     buttons = [
-        [
-            InlineKeyboardButton(text="🚗 Яндекс Навигатор", url=f"https://yandex.ru/maps/?pt={lon},{lat}&z=15&rtt=auto"),
-            InlineKeyboardButton(text="🗺 2ГИС", url=f"https://2gis.ru/geo/{lon},{lat}")
-        ]
+        [InlineKeyboardButton(text="🚗 Поехать (Яндекс.Навигатор)", url=nav_url)],
+        [InlineKeyboardButton(text="🗺 2ГИС", url=f"https://2gis.ru/geo/{lon},{lat}")]
     ]
     buttons.append([InlineKeyboardButton(text="📋 Показать ещё 2 варианта", callback_data=f"more_{station_id}")])
     buttons.append([InlineKeyboardButton(text="✏️ Сообщить цену", callback_data=f"report_price_{station_id}")])
@@ -81,12 +80,10 @@ def notification_action_keyboard(notif_id: int):
     ])
 
 def pro_purchase_keyboard():
-    """Клавиатура для покупки PRO с новыми тарифами."""
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="⚡ 29 ₽ / 24ч", callback_data="buy_tariff_pro_24h"),
          InlineKeyboardButton(text="👑 99 ₽ / мес", callback_data="buy_tariff_pro_1m")],
         [InlineKeyboardButton(text="🔥 249 ₽ / 3 мес", callback_data="buy_tariff_pro_3m")],
-        [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data="buy_pro_stars")]
     ])
 
 def emergency_payment_keyboard():
