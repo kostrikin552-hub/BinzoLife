@@ -13,7 +13,7 @@ from database.crud import (
     get_city_by_name, get_city_by_id, create_station, save_price, set_city_slug,
     get_or_create_city, get_stations_by_city, get_city_slug
 )
-from database.models import FuelType, SourceType, FuelPrice, Station, City  # <-- ДОБАВЛЕН Station
+from database.models import FuelType, SourceType, FuelPrice, Station, City
 from utils.cleaners import normalize_name, clean_address, get_brand_from_name, is_valid_price
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,22 @@ ADDRESS_KEYWORDS = [
     'пр-т', 'наб', 'набережная', 'вл', 'владение', 'д',
     'дом', 'корп', 'строение', 'проезд', 'пр-д', 'АЗС №'
 ]
+
+# ===== КАРТА ТОПЛИВА ДЛЯ ПАРСИНГА =====
+FUEL_TYPE_MAP = {
+    "Аи-92": FuelType.AI_92,
+    "АИ-92": FuelType.AI_92,
+    "Аи-95": FuelType.AI_95,
+    "АИ-95": FuelType.AI_95,
+    "Аи-98": FuelType.AI_98,
+    "АИ-98": FuelType.AI_98,
+    "Аи-100": FuelType.AI_100,
+    "АИ-100": FuelType.AI_100,
+    "ДТ": FuelType.DT,
+    "ДТ-З": FuelType.DT,
+    "ДТ-Е": FuelType.DT,
+}
+# =====================================
 
 def is_address(text: str) -> bool:
     if not text:
@@ -105,15 +121,20 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
                     return candidate.strip()
     return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
-def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, float]]:
+def parse_stations_from_html(html: str) -> List[Tuple[str, str, Dict[FuelType, float], float, float]]:
+    """
+    Парсит страницу и возвращает список станций.
+    Каждая станция: (название, адрес, словарь {FuelType: price}, lat, lon)
+    """
     soup = BeautifulSoup(html, 'html.parser')
     stations = []
     current_name = None
     current_address = None
-    current_price = None
+    current_prices = {}  # fuel_type -> price
     current_lat = None
     current_lon = None
 
+    # Пробуем извлечь координаты из JS-массивов
     js_pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
     js_matches = js_pattern.findall(html)
     coords_map = {}
@@ -131,14 +152,16 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
 
         clean_text = re.sub(r'<[^>]+>', '', text)
 
+        # Проверяем, является ли это брендом (началом новой станции)
         is_brand = any(b in clean_text for b in BRAND_KEYWORDS)
         if is_brand and len(clean_text) < 150:
-            if current_name and current_price is not None:
+            # Сохраняем предыдущую станцию, если есть
+            if current_name and current_prices:
                 lat, lon = coords_map.get(current_name, (None, None))
-                stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
+                stations.append((current_name, current_address or "", current_prices, lat or 0.0, lon or 0.0))
             current_name = clean_text
             current_address = None
-            current_price = None
+            current_prices = {}
             current_lat = None
             current_lon = None
             continue
@@ -154,24 +177,27 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, float, float, fl
                 current_address = clean_text
                 continue
 
-        match = re.search(r'А[иИ]-95\s*[:：]\s*([\d.,]+)', clean_text)
-        if match:
-            try:
-                current_price = float(match.group(1).replace(',', '.'))
-                if is_valid_price(current_price):
-                    lat, lon = coords_map.get(current_name, (None, None))
-                    stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
-                current_name = None
-                current_address = None
-                current_price = None
-                current_lat = None
-                current_lon = None
-            except ValueError:
-                pass
+        # Ищем цены для всех видов топлива
+        if current_name:
+            for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
+                pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                match_price = pattern.search(clean_text)
+                if match_price:
+                    try:
+                        price = float(match_price.group(1).replace(',', '.'))
+                        if is_valid_price(price):
+                            current_prices[fuel_type] = price
+                    except ValueError:
+                        pass
 
-    if current_name and current_price is not None and is_valid_price(current_price):
+        # Если есть цены и мы нашли их все (или есть подозрение, что это конец блока), сохраняем
+        # Для простоты будем считать, что если у нас есть цены и следующий элемент не является брендом,
+        # то мы можем продолжать собирать. Но мы сохраняем станцию, когда встречаем новый бренд или в конце.
+
+    # Сохраняем последнюю станцию
+    if current_name and current_prices:
         lat, lon = coords_map.get(current_name, (None, None))
-        stations.append((current_name, current_address or "", current_price, lat or 0.0, lon or 0.0))
+        stations.append((current_name, current_address or "", current_prices, lat or 0.0, lon or 0.0))
 
     return stations
 
@@ -232,17 +258,17 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
             updated_addresses = 0
             updated_coords = 0
 
-            for name, address, price, lat, lon in station_data:
+            for name, address, prices_by_fuel, lat, lon in station_data:
                 try:
-                    if not is_valid_price(price):
-                        logger.debug(f"Цена {price} аномальна для {name}, пропускаем")
+                    if not prices_by_fuel:
+                        logger.debug(f"Нет цен для станции {name}, пропускаем")
                         continue
 
                     clean_name = normalize_name(name)
                     clean_name = truncate_string(clean_name, 255)
                     clean_addr = clean_address(address, max_length=255) if address else ""
 
-                    # Ищем по координатам с округлением
+                    # Ищем станцию по координатам
                     station = None
                     if lat != 0.0 and lon != 0.0:
                         key = (round(lat, 6), round(lon, 6))
@@ -281,17 +307,19 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             station.longitude = lon
                             updated_coords += 1
 
-                    price_entry = FuelPrice(
-                        station_id=station.id,
-                        fuel_type=FuelType.AI_95,
-                        price=price,
-                        source=SourceType.PARSER,
-                        confidence=0.7,
-                        recorded_at=datetime.now(timezone.utc),
-                        is_fresh=True
-                    )
-                    db.add(price_entry)
-                    updated_prices += 1
+                    # Сохраняем все цены для этой станции
+                    for fuel_type, price in prices_by_fuel.items():
+                        price_entry = FuelPrice(
+                            station_id=station.id,
+                            fuel_type=fuel_type,
+                            price=price,
+                            source=SourceType.PARSER,
+                            confidence=0.7,
+                            recorded_at=datetime.now(timezone.utc),
+                            is_fresh=True
+                        )
+                        db.add(price_entry)
+                        updated_prices += 1
 
                 except Exception as e:
                     logger.error(f"Ошибка при обработке записи {name}: {e}")
