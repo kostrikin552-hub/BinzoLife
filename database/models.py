@@ -64,7 +64,6 @@ class Station(Base):
     prices = relationship("FuelPrice", back_populates="station")
     availability = relationship("AvailabilityReport", back_populates="station")
 
-    # Индексы для быстрого поиска по городу
     __table_args__ = (
         Index("ix_stations_city_id", "city_id"),
         Index("ix_stations_lat_lon", "latitude", "longitude"),
@@ -84,7 +83,7 @@ class FuelPrice(Base):
     station = relationship("Station", back_populates="prices")
 
     __table_args__ = (
-        Index("idx_prices_station_fuel_date", "station_id", "fuel_type", "recorded_at"),  # составной для графиков
+        Index("idx_prices_station_fuel_date", "station_id", "fuel_type", "recorded_at"),
         Index("idx_prices_station_id", "station_id"),
         Index("idx_prices_fuel_type", "fuel_type"),
     )
@@ -137,6 +136,7 @@ class User(Base):
     silent_hours_end = Column(Integer, nullable=True)
     free_searches_today = Column(Integer, default=1)
     last_free_search_date = Column(Date, nullable=True)
+    has_made_first_search = Column(Boolean, default=False)  # НОВОЕ ПОЛЕ ДЛЯ РЕФЕРАЛОВ
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
@@ -195,7 +195,7 @@ class Payment(Base):
     __tablename__ = "payments"
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    telegram_payment_charge_id = Column(String(100), unique=True, nullable=False)  # уникальный индекс
+    telegram_payment_charge_id = Column(String(100), unique=True, nullable=False)
     provider_payment_charge_id = Column(String(100), nullable=True)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), nullable=False, default="RUB")
@@ -208,7 +208,7 @@ class Payment(Base):
 
     __table_args__ = (
         Index("ix_payments_user_id", "user_id"),
-        Index("ix_payments_telegram_charge_id", "telegram_payment_charge_id", unique=True),  # дополнительно
+        Index("ix_payments_telegram_charge_id", "telegram_payment_charge_id", unique=True),
     )
 
 class Review(Base):
