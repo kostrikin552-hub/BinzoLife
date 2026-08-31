@@ -11,6 +11,7 @@ class FuelType(str, enum.Enum):
     AI_92 = "AI-92"
     AI_95 = "AI-95"
     AI_98 = "AI-98"
+    AI_100 = "AI-100"  # добавлен
     DT = "DT"
 
 class AvailabilityStatus(str, enum.Enum):
@@ -136,7 +137,7 @@ class User(Base):
     silent_hours_end = Column(Integer, nullable=True)
     free_searches_today = Column(Integer, default=1)
     last_free_search_date = Column(Date, nullable=True)
-    has_made_first_search = Column(Boolean, default=False)  # НОВОЕ ПОЛЕ ДЛЯ РЕФЕРАЛОВ
+    has_made_first_search = Column(Boolean, default=False)
 
     city = relationship("City")
     reports = relationship("AvailabilityReport", back_populates="user")
