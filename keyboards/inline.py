@@ -50,7 +50,6 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
     ])
 
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
-    # === КНОПКИ НАВИГАТОРА ===
     buttons = [
         [
             InlineKeyboardButton(text="🚗 Яндекс Навигатор", url=f"https://yandex.ru/maps/?pt={lon},{lat}&z=15&rtt=auto"),
@@ -82,11 +81,11 @@ def notification_action_keyboard(notif_id: int):
     ])
 
 def pro_purchase_keyboard():
-    # Используется при paywall – можно расширить
+    """Клавиатура для покупки PRO с новыми тарифами."""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 29 ₽ / 24ч", callback_data="buy_tariff_pro_24h"),
-         InlineKeyboardButton(text="💳 99 ₽ / мес", callback_data="buy_tariff_pro_1m")],
-        [InlineKeyboardButton(text="💳 249 ₽ / 3 мес", callback_data="buy_tariff_pro_3m")],
+        [InlineKeyboardButton(text="⚡ 29 ₽ / 24ч", callback_data="buy_tariff_pro_24h"),
+         InlineKeyboardButton(text="👑 99 ₽ / мес", callback_data="buy_tariff_pro_1m")],
+        [InlineKeyboardButton(text="🔥 249 ₽ / 3 мес", callback_data="buy_tariff_pro_3m")],
         [InlineKeyboardButton(text="⭐ Оплатить Stars", callback_data="buy_pro_stars")]
     ])
 
