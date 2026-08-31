@@ -49,7 +49,7 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")]
     ])
 
-def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1):
+def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float, city_id: int = None, is_pro: bool = False, index: int = 0, total: int = 1, fuel_type: str = "АИ-95"):
     nav_url = f"https://yandex.ru/maps/?rtext=~{lat},{lon}&rtt=auto"
     buttons = [
         [InlineKeyboardButton(text="🚗 Поехать (Яндекс.Навигатор)", url=nav_url)],
@@ -61,8 +61,8 @@ def station_action_keyboard(station_id: int, price: float, availability, lat: fl
 
     if is_pro:
         buttons.append([InlineKeyboardButton(text="📊 График цен", callback_data=f"graph_{station_id}")])
-        buttons.append([InlineKeyboardButton(text="🟢 Увед. о появлении", callback_data=f"alert_avail_{station_id}")])
-        buttons.append([InlineKeyboardButton(text="📉 Следить за ценой", callback_data=f"follow_{station_id}")])
+        buttons.append([InlineKeyboardButton(text=f"🟢 Увед. о появлении ({fuel_type})", callback_data=f"alert_avail_{station_id}")])
+        buttons.append([InlineKeyboardButton(text=f"📉 Следить за ценой ({fuel_type})", callback_data=f"follow_{station_id}")])
     else:
         buttons.append([InlineKeyboardButton(text="🔒 PRO-функции", callback_data="show_pro")])
 
@@ -95,6 +95,11 @@ def emergency_payment_keyboard():
 
 def fuel_choice_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="⛽ АИ-95")]],
+        keyboard=[
+            [KeyboardButton(text="⛽ АИ-92"), KeyboardButton(text="⛽ АИ-95")],
+            [KeyboardButton(text="⛽ АИ-98"), KeyboardButton(text="⛽ АИ-100")],
+            [KeyboardButton(text="⛽ ДТ")],
+            [KeyboardButton(text="◀️ Назад")],
+        ],
         resize_keyboard=True
     )
