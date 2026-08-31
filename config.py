@@ -26,10 +26,7 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Предупреждения о заглушках (для администратора)
 if settings.PROVIDER_TOKEN and settings.PROVIDER_TOKEN in ["ваш_провайдер_токен", "test", "provider"]:
     logger.warning("⚠️ PROVIDER_TOKEN выглядит как заглушка. Рублёвые платежи не будут работать.")
 if settings.INTERNAL_TOKEN in ["ваш_секретный_токен", "secret", "token", "ваш_секретный_токен_для_cron"]:
     logger.warning("⚠️ INTERNAL_TOKEN слишком простой. Используйте генератор паролей.")
-if settings.YANDEX_GEOCODER_API_KEY in ["ваш_ключ", ""]:
-    logger.warning("⚠️ YANDEX_GEOCODER_API_KEY не задан. Геокодер будет использовать бесплатный Nominatim (с ограничениями).")
