@@ -11,7 +11,14 @@ def main_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def fuel_choice_keyboard():
+    """Клавиатура выбора вида топлива."""
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="⛽ АИ-95")]],
+        keyboard=[
+            [KeyboardButton(text="⛽ АИ-92")],
+            [KeyboardButton(text="⛽ АИ-95")],
+            [KeyboardButton(text="⛽ АИ-98")],
+            [KeyboardButton(text="⛽ ДТ")],
+            [KeyboardButton(text="◀️ Назад")],
+        ],
         resize_keyboard=True
     )
