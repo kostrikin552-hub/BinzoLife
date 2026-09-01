@@ -1,85 +1,73 @@
-from aiogram import Router, types, F
-from aiogram.types import InlineQueryResultArticle, InputTextMessageContent, InlineKeyboardMarkup, InlineKeyboardButton
+import logging
+from aiogram import Router, types
+from aiogram.types import InlineQueryResultArticle, InputTextMessageContent
+from sqlalchemy import text
 from database.session import AsyncSessionLocal
-from database.models import FuelType
-from database.crud import get_user, get_city_by_name, get_stations_by_city, get_latest_fresh_price
 
-router = Router()
+logger = logging.getLogger(__name__)
+router = Router(name="inline")
 
 @router.inline_query()
-async def inline_search(query: types.InlineQuery):
-    # Проверяем, есть ли у пользователя город
-    async with AsyncSessionLocal() as db:
-        user = await get_user(db, query.from_user.id)  # get_user уже подгружает city через joinedload
-        if not user or not user.city_id:
-            result = InlineQueryResultArticle(
-                id="no_city",
-                title="📍 Сначала выберите город",
-                description="Нажмите, чтобы настроить город в боте",
-                input_message_content=InputTextMessageContent(
-                    "Чтобы искать дешёвый бензин, сначала настройте город в @BinzoLife_bot.\n"
-                    "Откройте бота и выберите город в профиле."
-                ),
-                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                    [InlineKeyboardButton(text="🔧 Настроить город", url="https://t.me/BinzoLife_bot?start=set_city")]
-                ])
+async def inline_query_handler(inline_query: types.InlineQuery):
+    results = []
+    query_text = inline_query.query.strip().lower()
+    
+    try:
+        # Определяем координаты пользователя (если переданы)
+        user_lat = inline_query.location.latitude if inline_query.location else None
+        user_lon = inline_query.location.longitude if inline_query.location else None
+
+        async with AsyncSessionLocal() as db:
+            if user_lat and user_lon:
+                # Поиск ближайших АЗС
+                sql = text("""
+                    SELECT s.id, s.name, s.address, s.brand,
+                           (6371 * acos(cos(radians(:lat)) * cos(radians(s.latitude)) * 
+                            cos(radians(s.longitude) - radians(:lon)) + 
+                            sin(radians(:lat)) * sin(radians(s.latitude)))) AS distance
+                    FROM stations s
+                    WHERE s.is_active = True
+                    ORDER BY distance ASC
+                    LIMIT 5
+                """)
+                res = await db.execute(sql, {"lat": user_lat, "lon": user_lon})
+            else:
+                # Поиск по названию / адресу / бренду
+                sql = text("""
+                    SELECT id, name, address, brand, 0 as distance
+                    FROM stations
+                    WHERE is_active = True AND (LOWER(name) LIKE :q OR LOWER(address) LIKE :q OR LOWER(brand) LIKE :q)
+                    LIMIT 5
+                """)
+                search_pattern = f"%{query_text}%" if query_text else "%лукойл%"
+                res = await db.execute(sql, {"q": search_pattern})
+                
+            stations = res.mappings().all()
+
+        for st in stations:
+            dist_str = f" • {st['distance']:.1f} км" if user_lat else ""
+            card_text = (
+                f"⛽ <b>{st['brand']} — {st['name']}</b>\n"
+                f"📍 Адрес: {st['address']}{dist_str}\n\n"
+                f"🔍 Откройте @BinzoLife_bot для просмотра цен и наличия топлива!"
             )
-            await query.answer([result], cache_time=30)
-            return
-
-        # Разбираем запрос: "95", "92", "98", "дт"
-        fuel_type_map = {
-            "95": FuelType.AI_95,
-            "92": FuelType.AI_92,
-            "98": FuelType.AI_98,
-            "дт": FuelType.DT,
-            "dt": FuelType.DT
-        }
-        fuel_input = query.query.strip().lower()
-        fuel_type = fuel_type_map.get(fuel_input, FuelType.AI_95)  # по умолчанию 95
-
-        city_name = user.city.name if user.city else "Москва"
-
-        city = await get_city_by_name(db, city_name)
-        if not city:
-            await query.answer([], cache_time=60)
-            return
-
-        stations = await get_stations_by_city(db, city.id)
-        if not stations:
-            await query.answer([], cache_time=60)
-            return
-
-        # Берём топ-3 станции с самой низкой ценой
-        prices = []
-        for station in stations:
-            price = await get_latest_fresh_price(db, station.id, fuel_type)
-            if price:
-                prices.append((station, price.price))
-        prices.sort(key=lambda x: x[1])  # сортируем по цене
-        top3 = prices[:3]
-
-        if not top3:
-            await query.answer([], cache_time=60)
-            return
-
-        # Формируем текст
-        text = f"⛽ <b>Топ АЗС с лучшей ценой на {fuel_type.value}:</b>\n\n"
-        for i, (station, price) in enumerate(top3, 1):
-            text += f"{i}️⃣ <b>{station.name}</b> — {price:.2f} ₽/л\n"
-        text += f"\n🔍 <i>Ищи дешёвое топливо рядом с собой в @BinzoLife_bot</i>"
-
-        # Создаём результат
-        result = InlineQueryResultArticle(
-            id="cheapest_fuel",
-            title=f"⚡ Топ дешёвых АЗС ({fuel_type.value})",
-            description=f"Показать 3 самые выгодные заправки",
-            input_message_content=InputTextMessageContent(
-                message_text=text,
-                parse_mode="HTML"
-            ),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📍 Найти лучшие цены у себя", url="https://t.me/BinzoLife_bot?start=inline_search")]
-            ])
+            results.append(
+                InlineQueryResultArticle(
+                    id=f"station_{st['id']}",
+                    title=f"{st['brand']} ({st['address'][:25]}...)",
+                    description=f"Наличие и цены на АЗС{dist_str}",
+                    input_message_content=InputTextMessageContent(
+                        message_text=card_text,
+                        parse_mode="HTML"
+                    )
+                )
+            )
+    except Exception as e:
+        logger.error(f"[Inline] Ошибка обработки инлайн запроса: {e}")
+    finally:
+        # КРИТИЧНО: Всегда отправляем ответ Telegram, иначе клиент зависает
+        await inline_query.answer(
+            results=results,
+            cache_time=10,
+            is_personal=True
         )
-        await query.answer([result], cache_time=10)
