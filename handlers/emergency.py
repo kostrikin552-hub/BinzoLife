@@ -2,7 +2,8 @@ import logging
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice
+from datetime import datetime, timezone
 
 from database.session import AsyncSessionLocal
 from database.crud import get_user, get_city_by_id, find_nearest_green_station, get_latest_fresh_price
@@ -12,6 +13,7 @@ from utils.geocoder import geocode_address
 from services.subscription import check_pro
 from keyboards.reply import main_menu_keyboard
 from keyboards.inline import pro_purchase_keyboard, emergency_payment_keyboard
+from config import settings
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -32,9 +34,9 @@ async def emergency_start(message: types.Message, state: FSMContext):
             )
             return
 
-    # Убираем кнопку геолокации, оставляем только ввод адреса
     kb = ReplyKeyboardMarkup(
         keyboard=[
+            [KeyboardButton(text="📍 Отправить местоположение", request_location=True)],
             [KeyboardButton(text="✏️ Ввести адрес вручную")],
             [KeyboardButton(text="❌ Отмена")],
         ],
@@ -43,9 +45,16 @@ async def emergency_start(message: types.Message, state: FSMContext):
     await state.set_state(EmergencyStates.waiting_address)
     await message.answer(
         "🚨 Бензин на нуле? Я проверю, есть ли поблизости АЗС с топливом.\n\n"
-        "📎 Напишите адрес (например, «ТРЦ Планета, Красноярск»).",
+        "📎 Отправь своё местоположение или напиши адрес.",
         reply_markup=kb
     )
+
+@router.message(EmergencyStates.waiting_address, F.location)
+async def emergency_location(message: types.Message, state: FSMContext):
+    lat = message.location.latitude
+    lon = message.location.longitude
+    await state.update_data(lat=lat, lon=lon)
+    await check_availability_and_offer(message, state, lat, lon)
 
 @router.message(EmergencyStates.waiting_address, F.text)
 async def emergency_address(message: types.Message, state: FSMContext):
@@ -59,14 +68,13 @@ async def emergency_address(message: types.Message, state: FSMContext):
         await message.answer("❌ Поиск отменён.", reply_markup=main_menu_keyboard())
         return
 
-    # Геокодируем адрес (без геолокации)
     coords = await geocode_address(address)
     if not coords:
         await message.answer(
             "❌ Не удалось определить координаты по этому адресу.\n"
-            "Пожалуйста, уточните адрес или укажите более известное место (например, «ТРЦ Планета, Красноярск»).",
+            "Пожалуйста, уточните адрес или отправьте геолокацию.",
             reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="✏️ Ввести адрес снова")]],
+                keyboard=[[KeyboardButton(text="📍 Отправить местоположение", request_location=True)]],
                 resize_keyboard=True
             )
         )
@@ -75,22 +83,6 @@ async def emergency_address(message: types.Message, state: FSMContext):
     lat, lon = coords
     await state.update_data(lat=lat, lon=lon)
     await check_availability_and_offer(message, state, lat, lon)
-
-@router.message(EmergencyStates.waiting_address, F.text == "✏️ Ввести адрес снова")
-async def emergency_retry_address(message: types.Message, state: FSMContext):
-    # Просто повторяем приглашение
-    await message.answer(
-        "✏️ Введите адрес ещё раз (например, «ул. Ленина, 1, Красноярск»):",
-        reply_markup=ReplyKeyboardMarkup(
-            keyboard=[[KeyboardButton(text="❌ Отмена")]],
-            resize_keyboard=True
-        )
-    )
-
-@router.message(EmergencyStates.waiting_address, F.text == "❌ Отмена")
-async def emergency_cancel(message: types.Message, state: FSMContext):
-    await state.clear()
-    await message.answer("❌ Поиск отменён.", reply_markup=main_menu_keyboard())
 
 async def check_availability_and_offer(message: types.Message, state: FSMContext, lat: float, lon: float):
     async with AsyncSessionLocal() as db:
@@ -147,17 +139,50 @@ async def check_availability_and_offer(message: types.Message, state: FSMContext
                 reply_markup=emergency_payment_keyboard()
             )
 
+# ===== ИСПРАВЛЕННАЯ ФУНКЦИЯ ОПЛАТЫ РУБЛЯМИ =====
 @router.callback_query(F.data == "pay_emergency_rub")
-async def pay_emergency_rub(callback: types.CallbackQuery, state: FSMContext):
+async def pay_emergency_rub(callback: types.CallbackQuery):
     await callback.answer()
-    from handlers.payments import send_invoice
-    await send_invoice(callback.message, amount=50, payload="emergency_search_rub", description="Экстренный поиск АЗС")
+    user_id = callback.from_user.id
+    order_id = f"emergency_rub_{user_id}_{int(datetime.now().timestamp())}"
+
+    # Сумма в КОПЕЙКАХ (50 ₽ = 5000)
+    prices = [LabeledPrice(label="🚨 Экстренный поиск АЗС", amount=5000)]
+
+    try:
+        await callback.message.answer_invoice(
+            title="🚨 Экстренный поиск АЗС",
+            description="Найдём ближайшую АЗС с топливом за 10 секунд",
+            provider_token=settings.PROVIDER_TOKEN,
+            currency="RUB",
+            prices=prices,
+            start_parameter="emergency",
+            payload=order_id,
+        )
+    except Exception as e:
+        logger.error(f"Ошибка создания инвойса: {e}")
+        await callback.message.answer("❌ Не удалось создать платёж. Попробуйте позже.")
 
 @router.callback_query(F.data == "pay_emergency_stars")
-async def pay_emergency_stars(callback: types.CallbackQuery, state: FSMContext):
+async def pay_emergency_stars(callback: types.CallbackQuery):
     await callback.answer()
-    from handlers.payments import send_invoice
-    await send_invoice(callback.message, amount=50, payload="emergency_search_stars", description="Экстренный поиск АЗС", currency="XTR")
+    user_id = callback.from_user.id
+    order_id = f"emergency_stars_{user_id}_{int(datetime.now().timestamp())}"
+    prices = [LabeledPrice(label="🚨 Экстренный поиск АЗС", amount=50)]  # Stars — целые числа
+
+    try:
+        await callback.message.answer_invoice(
+            title="🚨 Экстренный поиск АЗС",
+            description="Найдём ближайшую АЗС с топливом за 10 секунд",
+            provider_token="",
+            currency="XTR",
+            prices=prices,
+            start_parameter="emergency_stars",
+            payload=order_id,
+        )
+    except Exception as e:
+        logger.error(f"Ошибка создания Stars инвойса: {e}")
+        await callback.message.answer("❌ Не удалось создать платёж Stars. Попробуйте рублёвую оплату.")
 
 async def show_result(message: types.Message, station, lat: float, lon: float):
     async with AsyncSessionLocal() as db:
@@ -173,6 +198,6 @@ async def show_result(message: types.Message, station, lat: float, lon: float):
             f"⛽ Цена: {price_text}\n"
             f"📏 {dist:.1f} км, ~{time_min} мин в пути\n"
             f"\n🗺 <a href='https://yandex.ru/maps/?pt={station.longitude},{station.latitude}&z=15'>Открыть маршрут</a>\n\n"
-            f"Спасибо, что пользуетесь BinzoLife! Сохраните контакт на случай, если бензин снова закончится.",
+            f"Спасибо, что пользуетесь BinzoLife!",
             reply_markup=main_menu_keyboard()
         )
