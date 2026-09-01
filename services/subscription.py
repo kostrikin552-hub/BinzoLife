@@ -23,3 +23,25 @@ def format_pro_until(pro_until: datetime) -> str:
     if not pro_until:
         return "не активна"
     return pro_until.strftime("%d.%m.%Y %H:%M")
+# ===== ДОБАВИТЬ В КОНЕЦ ФАЙЛА services/subscription.py =====
+import asyncio
+import logging
+from aiogram import Bot
+from services.pro_notifications import send_pro_expiry_notifications_with_bot
+
+logger = logging.getLogger(__name__)
+
+async def subscription_expiration_worker(bot: Bot):
+    """
+    Фоновый воркер для проверки истечения PRO-подписок и триалов.
+    Запускает отправку уведомлений о скором окончании.
+    """
+    logger.info("[SubscriptionWorker] Запущен")
+    while True:
+        try:
+            await send_pro_expiry_notifications_with_bot(bot)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[SubscriptionWorker] Ошибка: {e}")
+        await asyncio.sleep(3600)  # каждые 60 минут
