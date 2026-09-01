@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ ДЛЯ BINZOLIFE
+# main.py — ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ ДЛЯ BINZOLIFE (исправлен только импорт парсера)
 import asyncio
 import logging
 import sys
@@ -36,7 +36,7 @@ from handlers import (
 # Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.fuelprice_parser import fuel_price_parser_worker
+from services.fuelprice_parser import run_parser          # <-- ИСПРАВЛЕНО (было fuel_price_parser_worker)
 from services.subscription import subscription_expiration_worker
 from services.notifications import price_alert_worker
 from services.pro_notifications import pro_reminder_worker
@@ -117,7 +117,6 @@ async def main():
     dp.callback_query.middleware(ThrottlingMiddleware(limit=0.3))
 
     # 4. Регистрация всех хендлеров
-    # ВАЖНО: порядок регистрации важен для корректного перехвата команд
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(find.router)
@@ -133,37 +132,30 @@ async def main():
 
     # 5. Запуск фоновых воркеров через независимые Tasks (БЕЗ блокировки event loop!)
     background_tasks: List[asyncio.Task] = [
-        # Сборщик данных наличия/очередей (gdebenz)
         asyncio.create_task(
             supervised_task(data_collector_worker, "DataCollector"), 
             name="task_data_collector"
         ),
-        # Пятничный радар цен
         asyncio.create_task(
             supervised_task(lambda: friday_radar_worker(bot), "FridayRadar"), 
             name="task_friday_radar"
         ),
-        # Парсер стел и цен
         asyncio.create_task(
-            supervised_task(fuel_price_parser_worker, "FuelPriceParser"), 
+            supervised_task(run_parser, "FuelPriceParser"),          # <-- ИСПРАВЛЕНО
             name="task_fuel_parser"
         ),
-        # Контроль окончания подписок и триалов PRO
         asyncio.create_task(
             supervised_task(lambda: subscription_expiration_worker(bot), "SubscriptionWorker"), 
             name="task_subscription"
         ),
-        # Персональные алерты о снижении цен
         asyncio.create_task(
             supervised_task(lambda: price_alert_worker(bot), "PriceAlerts"), 
             name="task_price_alerts"
         ),
-        # PRO-напоминания и онбординг
         asyncio.create_task(
             supervised_task(lambda: pro_reminder_worker(bot), "ProReminders"), 
             name="task_pro_reminders"
         ),
-        # Геокодер и обновление адресов АЗС
         asyncio.create_task(
             supervised_task(address_updater_worker, "AddressUpdater"), 
             name="task_address_updater"
@@ -174,8 +166,6 @@ async def main():
     logger.info("Бот готов к приёму сообщений пользователей...")
 
     try:
-        # 6. Запуск Long Polling
-        # Очищаем очередь старых накопившихся сообщений за время простоя
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(
             bot,
