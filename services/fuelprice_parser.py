@@ -331,3 +331,22 @@ async def find_station(db, stations, name: str, address: str, lat: float = None,
                 return s
 
     return None
+async def fuel_price_parser_worker():
+    """Фоновый воркер для периодического парсинга цен (раз в 4 часа)."""
+    logger.info("[FuelPriceParser] Воркер запущен")
+    await asyncio.sleep(30)  # Даем боту время на полный старт
+    while True:
+        try:
+            # Вызов вашей основной функции парсинга
+            if "run_parser" in globals():
+                await run_parser()
+            elif "parse_all_cities" in globals():
+                await parse_all_cities()
+            else:
+                logger.warning("[FuelPriceParser] Основная функция парсера не найдена.")
+        except asyncio.CancelledError:
+            logger.info("[FuelPriceParser] Воркер остановлен.")
+            break
+        except Exception as e:
+            logger.error(f"[FuelPriceParser] Ошибка при парсинге: {e}")
+        await asyncio.sleep(14400)  # 4 часа
