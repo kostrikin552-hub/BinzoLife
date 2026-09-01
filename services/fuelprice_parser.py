@@ -389,3 +389,23 @@ async def fuel_price_parser_worker():
 
         # Интервал между полными циклами — 4 часа (14400 секунд)
         await asyncio.sleep(14400)
+# Добавьте в конец services/fuelprice_parser.py:
+
+async def fuel_price_parser_worker():
+    """Фоновый воркер парсера цен."""
+    logger.info("[FuelPriceParser] Воркер запущен.")
+    await asyncio.sleep(20)
+    while True:
+        try:
+            if "run_parser" in globals():
+                await globals()["run_parser"]()
+            elif "parse_all_cities" in globals():
+                await globals()["parse_all_cities"]()
+            else:
+                logger.info("[FuelPriceParser] Запуск стандартного цикла обновления цен...")
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[FuelPriceParser] Ошибка при парсинге: {e}")
+        # Интервал 4 часа
+        await asyncio.sleep(14400)
