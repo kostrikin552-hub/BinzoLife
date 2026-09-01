@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ (исправлены импорты и воркеры)
+# main.py
 import asyncio
 import logging
 import sys
@@ -13,16 +13,26 @@ import config
 from database.session import engine, AsyncSessionLocal
 from middlewares.throttling import ThrottlingMiddleware
 
-# Роутеры
+# Все роутеры
 from handlers import (
-    admin, start, find, emergency, menu, payments, profile,
-    review, contest, notifications, inline, common
+    admin,
+    start,
+    find,
+    emergency,
+    menu,
+    payments,
+    profile,
+    review,
+    contest,
+    notifications,
+    inline,
+    common,
 )
 
-# Фоновые сервисы
+# Все фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.fuelprice_parser import fuel_price_parser_worker   # <-- ИСПРАВЛЕНО
+from services.fuelprice_parser import fuel_price_parser_worker
 from services.subscription import subscription_expiration_worker
 from services.notifications import price_alert_worker
 from services.pro_notifications import pro_reminder_worker
@@ -35,9 +45,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BinzoLife")
 
-
 async def init_database():
-    """Гарантирует существование таблицы наличия топлива при старте."""
+    """Гарантирует существование необходимых таблиц при первом старте."""
     async with AsyncSessionLocal() as db:
         try:
             await db.execute(text("""
@@ -52,27 +61,23 @@ async def init_database():
                     confidence NUMERIC(5, 2) NOT NULL DEFAULT 0.8,
                     PRIMARY KEY (station_id, fuel_type)
                 );
-                CREATE INDEX IF NOT EXISTS idx_fuel_avail_lookup 
-                ON station_current_fuel (station_id, fuel_type, availability);
             """))
             await db.commit()
-            logger.info("База данных готова.")
+            logger.info("Таблицы базы данных проверены и готовы к работе.")
         except Exception as e:
             await db.rollback()
-            logger.warning(f"Инициализация БД: {e}")
+            logger.warning(f"Инициализация таблиц БД: {e}")
 
-
-async def run_supervised(coro, task_name: str):
-    """Изолирует ошибки воркеров, чтобы бот никогда не прекращал отвечать."""
+async def run_supervised(coro_fn, task_name: str):
+    """Изолирует ошибки воркеров, предотвращая падение всего бота."""
     while True:
         try:
-            await coro()
+            await coro_fn()
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Сбой сервиса [{task_name}]: {e}. Перезапуск через 20 сек.")
-            await asyncio.sleep(20)
-
+            logger.error(f"Сбой сервиса [{task_name}]: {e}. Перезапуск через 30 сек.")
+            await asyncio.sleep(30)
 
 async def main():
     logger.info("Запуск BinzoLife Bot...")
@@ -85,7 +90,7 @@ async def main():
     dp.message.middleware(ThrottlingMiddleware(limit=0.5))
     dp.callback_query.middleware(ThrottlingMiddleware(limit=0.3))
 
-    # Регистрация всех роутеров
+    # Регистрация всех хендлеров
     dp.include_router(admin.router)
     dp.include_router(start.router)
     dp.include_router(find.router)
@@ -99,7 +104,7 @@ async def main():
     dp.include_router(inline.router)
     dp.include_router(common.router)
 
-    # Фоновые службы (запускаются строго через create_task)
+    # Запуск фоновых служб
     tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
@@ -112,7 +117,7 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Бот успешно слушает сообщения пользователей!")
+        logger.info("✅ Бот успешно слушает входящие сообщения Telegram!")
         await dp.start_polling(
             bot,
             allowed_updates=[
@@ -129,8 +134,7 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
         await bot.session.close()
         await engine.dispose()
-        logger.info("Бот остановлен.")
-
+        logger.info("Бот штатно остановлен.")
 
 if __name__ == "__main__":
     try:
