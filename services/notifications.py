@@ -1,4 +1,3 @@
-# services/notifications.py
 import asyncio
 import logging
 from datetime import datetime
@@ -9,6 +8,10 @@ from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
+# =====================================================================
+# 1. УТИЛИТЫ ОТПРАВКИ И УПРАВЛЕНИЯ УВЕДОМЛЕНИЯМИ
+# =====================================================================
+
 async def send_user_notification(
     bot: Bot,
     telegram_id: int,
@@ -16,7 +19,7 @@ async def send_user_notification(
     keyboard: Optional[Any] = None,
     parse_mode: str = "HTML"
 ) -> bool:
-    """Безопасная отправка уведомления пользователю."""
+    """Безопасная отправка уведомления пользователю с перехватом блокировок."""
     try:
         await bot.send_message(
             chat_id=telegram_id,
@@ -27,11 +30,12 @@ async def send_user_notification(
         )
         return True
     except Exception as e:
-        logger.debug(f"[Notifications] Ошибка отправки пользователю {telegram_id}: {e}")
+        logger.debug(f"[Notifications] Не удалось отправить сообщение {telegram_id}: {e}")
         return False
 
+
 async def broadcast_admin_alert(bot: Bot, message: str, admin_ids: Optional[List[int]] = None):
-    """Рассылка системных алертов администраторам."""
+    """Рассылка системного алерта администраторам бота."""
     if not admin_ids:
         try:
             from config import ADMIN_IDS
@@ -50,9 +54,19 @@ async def broadcast_admin_alert(bot: Bot, message: str, admin_ids: Optional[List
         except Exception:
             pass
 
+
 class NotificationService:
+    """Класс-сервис для вызова из любых хендлеров и сервисов."""
+
     @staticmethod
-    async def notify_price_drop(bot: Bot, user_id: int, station_name: str, fuel_type: str, old_price: float, new_price: float):
+    async def notify_price_drop(
+        bot: Bot,
+        user_id: int,
+        station_name: str,
+        fuel_type: str,
+        old_price: float,
+        new_price: float
+    ):
         diff = old_price - new_price
         msg = (
             f"📉 <b>Цена снизилась!</b>\n\n"
@@ -60,12 +74,18 @@ class NotificationService:
             f"⛽ Топливо: <b>{fuel_type}</b>\n"
             f"💰 Старая цена: {old_price:.2f} ₽\n"
             f"🔥 Новая цена: <b>{new_price:.2f} ₽</b> (выгода {diff:.2f} ₽/л)\n\n"
-            f"📍 <i>Посмотреть на карте: /find</i>"
+            f"📍 <i>Посмотреть маршрут: /find</i>"
         )
         await send_user_notification(bot, user_id, msg)
 
     @staticmethod
-    async def notify_fuel_available(bot: Bot, user_id: int, station_name: str, fuel_type: str, address: str):
+    async def notify_fuel_available(
+        bot: Bot,
+        user_id: int,
+        station_name: str,
+        fuel_type: str,
+        address: str
+    ):
         msg = (
             f"✅ <b>Топливо снова в наличии!</b>\n\n"
             f"⛽ АЗС: <b>{station_name}</b>\n"
@@ -75,8 +95,16 @@ class NotificationService:
         )
         await send_user_notification(bot, user_id, msg)
 
+
+# =====================================================================
+# 2. ЛОГИКА ОТСЛЕЖИВАНИЯ ЦЕН И РАССЫЛКИ АЛЕРТОВ
+# =====================================================================
+
 async def process_price_drop_alerts(bot: Bot):
-    """Проверяет резкое снижение цен и оповещает пользователей."""
+    """
+    Проверяет снижение цен (>= 0.30 ₽) за последние 6 часов 
+    и отправляет персональные уведомления пользователям города.
+    """
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -133,18 +161,28 @@ async def process_price_drop_alerts(bot: Bot):
     except Exception as e:
         logger.error(f"[PriceAlerts] Ошибка выборки снижения цен: {e}")
 
+
+# =====================================================================
+# 3. ФОНОВЫЙ ВОРКЕР ДЛЯ MAIN.PY
+# =====================================================================
+
 async def price_alert_worker(bot: Bot):
-    """Фоновый воркер алертов цен (раз в 30 минут)."""
-    logger.info("[PriceAlertWorker] Сервис мониторинга цен запущен.")
+    """
+    Фоновый воркер мониторинга и рассылки алертов цен (раз в 30 минут).
+    """
+    logger.info("[PriceAlertWorker] Сервис мониторинга цен успешно запущен.")
     await asyncio.sleep(45)
     while True:
         try:
             await process_price_drop_alerts(bot)
         except asyncio.CancelledError:
+            logger.info("[PriceAlertWorker] Воркер мониторинга цен остановлен.")
             break
         except Exception as e:
-            logger.error(f"[PriceAlertWorker] Ошибка: {e}")
+            logger.error(f"[PriceAlertWorker] Необработанное исключение: {e}")
+
         await asyncio.sleep(1800)
+
 
 # Алиасы
 send_price_alerts = process_price_drop_alerts
