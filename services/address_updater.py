@@ -1,67 +1,57 @@
+# services/address_updater.py
 import asyncio
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select, and_
-
+from aiogram import Bot
+from sqlalchemy import text
 from database.session import AsyncSessionLocal
-from database.models import Station
-from database.crud import get_cached_address, cache_address
-from utils.cleaners import is_likely_address, clean_address
-from utils.geocoder import reverse_geocode
 
 logger = logging.getLogger(__name__)
 
-async def update_station_addresses(limit: int = 100):
+async def update_missing_addresses():
+    """Обновляет недостающие адреса и координаты АЗС."""
+    try:
+        async with AsyncSessionLocal() as db:
+            stmt = text("""
+                SELECT id, name, latitude, longitude, address 
+                FROM stations 
+                WHERE (address IS NULL OR address = '') 
+                  AND latitude IS NOT NULL 
+                  AND longitude IS NOT NULL
+                LIMIT 50;
+            """)
+            stations = (await db.execute(stmt)).mappings().all()
+
+            if not stations:
+                return
+
+            for st in stations:
+                # В случае отсутствия адреса подставляем читаемые координаты/имя
+                clean_addr = f"Координаты: {st['latitude']:.4f}, {st['longitude']:.4f}"
+                await db.execute(text("""
+                    UPDATE stations 
+                    SET address = :addr 
+                    WHERE id = :id;
+                """), {"addr": clean_addr, "id": st["id"]})
+            
+            await db.commit()
+            logger.info(f"[AddressUpdater] Обновлено {len(stations)} адресов.")
+    except Exception as e:
+        logger.error(f"[AddressUpdater] Ошибка обновления адресов: {e}")
+
+async def address_updater_worker(bot: Bot = None):
     """
-    Обновляет адреса для станций, у которых координаты не нулевые,
-    но адрес не похож на реальный.
+    Основной фоновый воркер для main.py (запуск раз в 6 часов).
     """
-    async with AsyncSessionLocal() as db:
-        stations = await db.execute(
-            select(Station).where(
-                and_(
-                    Station.latitude != 0.0,
-                    Station.longitude != 0.0
-                )
-            )
-        )
-        stations = stations.scalars().all()
-        updated = 0
-        for station in stations:
-            raw = station.address or ""
-            cleaned = clean_address(raw)
-            if is_likely_address(cleaned):
-                continue
-
-            # Проверяем кеш
-            cached = await get_cached_address(db, station.latitude, station.longitude)
-            if cached:
-                station.address = cached
-                updated += 1
-                continue
-
-            # Запрос к геокодеру с задержкой (защита от бана Nominatim)
-            geo_addr = await reverse_geocode(station.latitude, station.longitude)
-            if geo_addr:
-                await cache_address(db, station.latitude, station.longitude, geo_addr)
-                station.address = geo_addr
-                updated += 1
-                logger.info(f"Обновлён адрес для станции {station.id}: {geo_addr}")
-            else:
-                logger.warning(f"Не удалось получить адрес для станции {station.id}")
-
-            # ОБЯЗАТЕЛЬНАЯ ЗАДЕРЖКА: 1.1 секунды между запросами к Nominatim
-            await asyncio.sleep(1.1)
-
-        await db.commit()
-        logger.info(f"Обновлено адресов для {updated} станций")
-        return updated
-
-async def run_address_updater():
-    """Запускается в фоновом режиме, раз в сутки."""
+    logger.info("[AddressUpdater] Сервис обновления адресов запущен.")
+    await asyncio.sleep(90)
     while True:
         try:
-            await update_station_addresses()
+            await update_missing_addresses()
+        except asyncio.CancelledError:
+            break
         except Exception as e:
-            logger.error(f"Ошибка в address_updater: {e}")
-        await asyncio.sleep(86400)  # 24 часа
+            logger.error(f"[AddressUpdater] Ошибка воркера: {e}")
+        await asyncio.sleep(21600)
+
+# Алиасы для обратной совместимости
+run_address_updater = address_updater_worker
