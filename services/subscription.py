@@ -1,4 +1,3 @@
-# services/subscription.py
 import asyncio
 import logging
 from datetime import datetime, timedelta
@@ -9,14 +8,14 @@ from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
-# ==========================================
-# 1. ФУНКЦИИ ФОРМАТИРОВАНИЯ И ОТОБРАЖЕНИЯ
-# ==========================================
+# =====================================================================
+# 1. ФУНКЦИИ ФОРМАТИРОВАНИЯ, ТЕКСТОВ И БЕЙДЖЕЙ ДЛЯ ПРОФИЛЯ И ХЕНДЛЕРОВ
+# =====================================================================
 
 def format_pro_until(pro_until: Optional[Union[datetime, str]]) -> str:
     """
-    Форматирует дату окончания подписки в понятный для пользователя вид:
-    'до 15.10.2026 (осталось 12 дн.)' или 'Не активна'.
+    Форматирует дату окончания PRO-подписки в человекочитаемый вид:
+    'до 15.10.2026 (осталось 12 дн.)' или '❌ Не активна'.
     """
     if not pro_until:
         return "❌ Не активна"
@@ -27,7 +26,6 @@ def format_pro_until(pro_until: Optional[Union[datetime, str]]) -> str:
         except Exception:
             return str(pro_until)
 
-    # Если datetime с таймзоной, приводим к naive для сравнения
     dt_val = pro_until.replace(tzinfo=None) if hasattr(pro_until, "tzinfo") and pro_until.tzinfo else pro_until
     now = datetime.utcnow()
 
@@ -46,25 +44,30 @@ def format_pro_until(pro_until: Optional[Union[datetime, str]]) -> str:
 
 
 def get_pro_status_text(is_pro: bool, pro_until: Optional[datetime]) -> str:
-    """Генерирует готовый текстовый бейдж для профиля."""
-    if is_pro and pro_until and (pro_until.replace(tzinfo=None) if pro_until.tzinfo else pro_until) > datetime.utcnow():
-        return f"🌟 <b>PRO-аккаунт</b> ({format_pro_until(pro_until)})"
+    """Генерирует готовый текстовый статус для карточки профиля."""
+    if is_pro and pro_until:
+        dt_val = pro_until.replace(tzinfo=None) if hasattr(pro_until, "tzinfo") and pro_until.tzinfo else pro_until
+        if dt_val > datetime.utcnow():
+            return f"🌟 <b>PRO-аккаунт</b> ({format_pro_until(pro_until)})"
     return "Стандартный (Базовый доступ)"
 
 
 def format_subscription_info(user_data: Dict[str, Any]) -> str:
-    """Форматирует сводку подписки для сообщения профиля."""
+    """Форматирует сводную информацию о подписке из словаря пользователя."""
     is_pro = bool(user_data.get("is_pro", False))
     pro_until = user_data.get("pro_until")
     return get_pro_status_text(is_pro, pro_until)
 
 
-# ==========================================
-# 2. ПРОВЕРКА СТАТУСА И ДОСТУПА В БД
-# ==========================================
+# =====================================================================
+# 2. ПРОВЕРКА СТАТУСА В БАЗЕ ДАННЫХ И ДОСТУПА К ФУНКЦИЯМ
+# =====================================================================
 
 async def is_user_pro(user_id: int) -> bool:
-    """Проверяет, активен ли PRO-статус у пользователя."""
+    """
+    Проверяет, активна ли PRO-подписка у пользователя (по telegram_id или id).
+    Автоматически сверяет срок годности pro_until с текущим временем UTC.
+    """
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -79,39 +82,44 @@ async def is_user_pro(user_id: int) -> bool:
 
             if row.get("is_pro") and row.get("pro_until"):
                 dt = row["pro_until"]
-                dt_val = dt.replace(tzinfo=None) if dt.tzinfo else dt
+                dt_val = dt.replace(tzinfo=None) if hasattr(dt, "tzinfo") and dt.tzinfo else dt
                 return dt_val > datetime.utcnow()
             return bool(row.get("is_pro", False))
     except Exception as e:
-        logger.error(f"[Subscription] Ошибка is_user_pro: {e}")
+        logger.error(f"[Subscription] Ошибка проверки is_user_pro для {user_id}: {e}")
         return False
 
 
 async def check_pro(user_id: int) -> bool:
-    """Основной алиас для хендлеров."""
+    """Основной алиас для хендлеров find.py, emergency.py, radar.py."""
     return await is_user_pro(user_id)
 
 
 async def get_user_pro_status(user_id: int) -> Dict[str, Any]:
-    """Возвращает структурированный статус подписки."""
+    """Возвращает полный словарь со статусом подписки пользователя."""
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
-                SELECT id, telegram_id, is_pro, pro_until 
+                SELECT id, telegram_id, is_pro, pro_until, created_at 
                 FROM users 
                 WHERE telegram_id = :uid OR id = :uid
                 LIMIT 1;
             """)
             row = (await db.execute(stmt, {"uid": user_id})).mappings().first()
             if not row:
-                return {"is_pro": False, "pro_until": None, "days_left": 0, "formatted": "Не активна"}
+                return {
+                    "is_pro": False,
+                    "pro_until": None,
+                    "days_left": 0,
+                    "formatted": "❌ Не активна"
+                }
 
             is_pro = bool(row.get("is_pro", False))
             pro_until = row.get("pro_until")
             days_left = 0
 
             if pro_until:
-                dt_val = pro_until.replace(tzinfo=None) if pro_until.tzinfo else pro_until
+                dt_val = pro_until.replace(tzinfo=None) if hasattr(pro_until, "tzinfo") and pro_until.tzinfo else pro_until
                 delta = dt_val - datetime.utcnow()
                 days_left = max(0, delta.days)
                 if delta.total_seconds() <= 0:
@@ -124,16 +132,21 @@ async def get_user_pro_status(user_id: int) -> Dict[str, Any]:
                 "formatted": format_pro_until(pro_until)
             }
     except Exception as e:
-        logger.error(f"[Subscription] Ошибка get_user_pro_status: {e}")
-        return {"is_pro": False, "pro_until": None, "days_left": 0, "formatted": "Ошибка"}
+        logger.error(f"[Subscription] Ошибка получения get_user_pro_status: {e}")
+        return {
+            "is_pro": False,
+            "pro_until": None,
+            "days_left": 0,
+            "formatted": "Ошибка загрузки"
+        }
 
 
-# ==========================================
-# 3. НАЧИСЛЕНИЕ И ПРОДЛЕНИЕ ПОДПИСКИ
-# ==========================================
+# =====================================================================
+# 3. НАЧИСЛЕНИЕ, ПРОДЛЕНИЕ И ОТЗЫВ ПОДПИСОК
+# =====================================================================
 
 async def grant_pro(user_id: int, days: int = 30) -> bool:
-    """Выдает или продлевает подписку на заданное число дней."""
+    """Выдает или продлевает пользователю подписку на заданное количество дней."""
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -151,17 +164,17 @@ async def grant_pro(user_id: int, days: int = 30) -> bool:
             await db.commit()
             return bool(res.rowcount > 0)
     except Exception as e:
-        logger.error(f"[Subscription] Ошибка grant_pro: {e}")
+        logger.error(f"[Subscription] Ошибка в grant_pro для {user_id}: {e}")
         return False
 
 
 async def extend_user_pro(user_id: int, days: int = 30) -> bool:
-    """Алиас для хендлеров оплаты."""
+    """Алиас для модуля payments.py и реферальной системы."""
     return await grant_pro(user_id, days)
 
 
 async def revoke_pro(user_id: int) -> bool:
-    """Отзывает подписку."""
+    """Принудительно отзывает PRO-подписку у пользователя."""
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -173,19 +186,22 @@ async def revoke_pro(user_id: int) -> bool:
             await db.commit()
             return True
     except Exception as e:
-        logger.error(f"[Subscription] Ошибка revoke_pro: {e}")
+        logger.error(f"[Subscription] Ошибка в revoke_pro для {user_id}: {e}")
         return False
 
 
-# ==========================================
-# 4. ФОНОВЫЙ ВОРКЕР ПРОВЕРКИ
-# ==========================================
+# =====================================================================
+# 4. ФОНОВЫЙ ВОРКЕР ПРОВЕРКИ И ОПОВЕЩЕНИЯ ОБ ОКОНЧАНИИ СРОКА
+# =====================================================================
 
 async def check_expiring_subscriptions(bot: Bot):
-    """Оповещает об истекающих подписках и отключает завершенные."""
+    """
+    Проверяет базу данных, отправляет предупреждения за 3 дня и 1 день,
+    а также автоматически переводит истекшие аккаунты в статус is_pro = false.
+    """
     try:
         async with AsyncSessionLocal() as db:
-            # Предупреждение за 3 дня
+            # 1. Предупреждение за 3 дня
             stmt_3d = text("""
                 SELECT id, telegram_id, pro_until 
                 FROM users 
@@ -197,15 +213,42 @@ async def check_expiring_subscriptions(bot: Bot):
             for u in exp_3d:
                 try:
                     await bot.send_message(
-                        u["telegram_id"],
-                        "⏳ <b>Ваша PRO-подписка истекает через 3 дня!</b>\n\n"
-                        "Продлите её в меню /profile, чтобы не потерять доступ к экстренному поиску и мониторингу очередей.",
+                        chat_id=u["telegram_id"],
+                        text=(
+                            "⏳ <b>Ваша PRO-подписка истекает через 3 дня!</b>\n\n"
+                            "Продлите подписку в меню /profile, чтобы не потерять доступ к экстренному поиску, "
+                            "пятничному радару цен и мониторингу очередей на АЗС."
+                        ),
                         parse_mode="HTML"
                     )
+                    await asyncio.sleep(0.05)
                 except Exception:
                     pass
 
-            # Отключение истекших
+            # 2. Предупреждение за 1 день
+            stmt_1d = text("""
+                SELECT id, telegram_id, pro_until 
+                FROM users 
+                WHERE is_pro = true 
+                  AND pro_until BETWEEN NOW() AND NOW() + INTERVAL '1 day'
+                  AND pro_until > NOW() + INTERVAL '23 hours';
+            """)
+            exp_1d = (await db.execute(stmt_1d)).mappings().all()
+            for u in exp_1d:
+                try:
+                    await bot.send_message(
+                        chat_id=u["telegram_id"],
+                        text=(
+                            "⚠️ <b>Внимание: PRO-подписка заканчивается завтра!</b>\n\n"
+                            "Чтобы сохранить скидки и персональные алерты, продлите подписку в разделе /profile."
+                        ),
+                        parse_mode="HTML"
+                    )
+                    await asyncio.sleep(0.05)
+                except Exception:
+                    pass
+
+            # 3. Отключение истекших подписок
             stmt_expired = text("""
                 UPDATE users 
                 SET is_pro = false 
@@ -218,26 +261,37 @@ async def check_expiring_subscriptions(bot: Bot):
             for u in expired:
                 try:
                     await bot.send_message(
-                        u["telegram_id"],
-                        "❌ <b>Срок действия вашей PRO-подписки завершён.</b>\n\n"
-                        "Вы можете возобновить подписку в любой момент командой /profile.",
+                        chat_id=u["telegram_id"],
+                        text=(
+                            "❌ <b>Срок действия вашей PRO-подписки завершён.</b>\n\n"
+                            "Ваш аккаунт переведён на базовый тариф. Вы можете возобновить PRO-доступ "
+                            "в любой момент через команду /profile."
+                        ),
                         parse_mode="HTML"
                     )
+                    await asyncio.sleep(0.05)
                 except Exception:
                     pass
 
     except Exception as e:
-        logger.error(f"[SubscriptionService] Ошибка воркера: {e}")
+        logger.error(f"[SubscriptionService] Ошибка в check_expiring_subscriptions: {e}")
 
 
 async def subscription_expiration_worker(bot: Bot):
-    """Воркер, запускаемый в main.py."""
-    logger.info("[SubscriptionService] Воркер запущен.")
+    """Фоновый воркер, запускаемый оркестратором main.py (проверка каждые 12 часов)."""
+    logger.info("[SubscriptionService] Воркер контроля подписок успешно запущен.")
+    await asyncio.sleep(30)
     while True:
         try:
             await check_expiring_subscriptions(bot)
         except asyncio.CancelledError:
+            logger.info("[SubscriptionService] Воркер контроля подписок остановлен.")
             break
         except Exception as e:
-            logger.error(f"[SubscriptionService] Исключение воркера: {e}")
+            logger.error(f"[SubscriptionService] Необработанная ошибка воркера: {e}")
         await asyncio.sleep(43200)
+
+
+# Полный набор алиасов для исключения любых ошибок импорта
+subscription_worker = subscription_expiration_worker
+run_subscription_worker = subscription_expiration_worker
