@@ -8,15 +8,15 @@ from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
-
 async def broadcast_friday_radar(bot: Bot):
-    logger.info("[FridayRadar] Формирование пятничной сводки цен...")
+    """Отправка пятничного радара с лучшими ценами."""
+    logger.info("[FridayRadar] Старт рассылки лучших цен...")
     try:
         async with AsyncSessionLocal() as db:
             users = (await db.execute(text("""
-                SELECT telegram_id, city_id
-                FROM users
-                WHERE is_active = true AND city_id IS NOT NULL
+                SELECT telegram_id, city_id 
+                FROM users 
+                WHERE is_active = true AND city_id IS NOT NULL;
             """))).mappings().all()
 
         if not users:
@@ -33,9 +33,9 @@ async def broadcast_friday_radar(bot: Bot):
                         JOIN fuel_prices f ON s.id = f.station_id
                         WHERE s.city_id = :cid AND f.fuel_type = 'AI-95' AND f.is_fresh = true
                         ORDER BY f.price ASC
-                        LIMIT 3
+                        LIMIT 3;
                     """), {"cid": cid})).mappings().all()
-                city_cache[cid] = top
+                    city_cache[cid] = top
 
             best_stations = city_cache.get(cid)
             if not best_stations:
@@ -44,31 +44,30 @@ async def broadcast_friday_radar(bot: Bot):
             lines = ["🚗 <b>Пятничный радар цен BinzoLife</b>\nВыгодный АИ-95 на выходные:\n"]
             for idx, item in enumerate(best_stations, 1):
                 lines.append(f"{idx}. <b>{item['brand']}</b> ({item['address']}) — <b>{item['price']:.2f} ₽</b>")
-            lines.append("\n💡 <i>Заправляйтесь с умом и экономьте!</i>")
+            lines.append("\n💡 <i>Экономьте на каждой заправке с BinzoLife!</i>")
 
             try:
                 await bot.send_message(u["telegram_id"], "\n".join(lines), parse_mode="HTML")
-                await asyncio.sleep(0.05)  # Защита от Telegram rate limit
+                await asyncio.sleep(0.05)  # Защита от лимитов Telegram
             except Exception:
                 pass
 
-        logger.info(f"[FridayRadar] Радар отправлен {len(users)} пользователям.")
+        logger.info(f"[FridayRadar] Рассылка завершена для {len(users)} пользователей.")
     except Exception as e:
         logger.error(f"[FridayRadar] Ошибка рассылки: {e}")
 
-
 async def friday_radar_worker(bot: Bot):
-    """Проверяет время каждую минуту и запускает рассылку в пятницу в 17:00."""
+    """Планировщик пятничной рассылки."""
     logger.info("[FridayRadar] Планировщик запущен.")
     while True:
         try:
             now = datetime.now()
-            # Пятница (weekday == 4), 17:00
+            # Пятница (weekday == 4) в 17:00
             if now.weekday() == 4 and now.hour == 17 and now.minute < 5:
                 await broadcast_friday_radar(bot)
-                await asyncio.sleep(3600)  # Спим 1 час во избежание повтора
+                await asyncio.sleep(3600)
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"[FridayRadar] Ошибка таймера: {e}")
+            logger.error(f"[FridayRadar] Ошибка планировщика: {e}")
         await asyncio.sleep(60)
