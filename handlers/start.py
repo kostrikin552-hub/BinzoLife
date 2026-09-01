@@ -9,57 +9,12 @@ from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popula
 
 router = Router()
 
-CHANNEL_ID = -1004398885383
 CHANNEL_LINK = "https://t.me/BinzoLife_News"
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    args = message.text.split()
-    user_id = message.from_user.id
-    username = message.from_user.username
-
-    is_subscribed = await check_subscription(message.bot, user_id)
-    if not is_subscribed:
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="📢 Подписаться на канал", url=CHANNEL_LINK)],
-            [InlineKeyboardButton(text="✅ Я подписался", callback_data="check_subscribe")]
-        ])
-        await message.answer(
-            "📢 Чтобы пользоваться ботом, подпишитесь на наш канал:\n"
-            f"{CHANNEL_LINK}\n\n"
-            "После подписки нажмите «Я подписался».",
-            reply_markup=keyboard,
-            parse_mode="HTML"
-        )
-        return
-
+    # Убрана обязательная подписка — сразу переходим к приветствию
     await process_start(message, state)
-
-@router.callback_query(F.data == "check_subscribe")
-async def check_subscribe(callback: types.CallbackQuery, state: FSMContext):
-    user_id = callback.from_user.id
-    is_subscribed = await check_subscription(callback.bot, user_id)
-    if is_subscribed:
-        await callback.message.delete()
-        await callback.message.answer("✅ Спасибо! Теперь вы можете пользоваться ботом.")
-        await state.clear()
-        await process_start(callback.message, state)
-    else:
-        await callback.answer(
-            "❌ Вы ещё не подписались на канал. Пожалуйста, подпишитесь и нажмите кнопку снова.",
-            show_alert=True
-        )
-
-async def check_subscription(bot, user_id: int) -> bool:
-    try:
-        chat_member = await bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
-        return chat_member.status in ["member", "administrator", "creator"]
-    except Exception:
-        try:
-            chat_member = await bot.get_chat_member(chat_id="@BinzoLife_News", user_id=user_id)
-            return chat_member.status in ["member", "administrator", "creator"]
-        except Exception:
-            return True
 
 async def process_start(message: types.Message, state: FSMContext):
     args = message.text.split()
@@ -112,6 +67,7 @@ async def process_start(message: types.Message, state: FSMContext):
             reply_markup=city_choice_keyboard()
         )
 
+# ---------- Обработчики выбора города ----------
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
     await callback.answer()
