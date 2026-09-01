@@ -1,4 +1,3 @@
-# main.py
 import asyncio
 import logging
 import sys
@@ -13,7 +12,7 @@ import config
 from database.session import engine, AsyncSessionLocal
 from middlewares.throttling import ThrottlingMiddleware
 
-# Роутеры
+# Импорт всех 12 роутеров
 from handlers import (
     admin,
     start,
@@ -29,7 +28,7 @@ from handlers import (
     common,
 )
 
-# Фоновые службы
+# Импорт всех фоновых служб
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
 from services.fuelprice_parser import fuel_price_parser_worker
@@ -38,6 +37,7 @@ from services.notifications import price_alert_worker
 from services.pro_notifications import pro_reminder_worker
 from services.address_updater import address_updater_worker
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - [%(levelname)s] - %(name)s - %(message)s",
@@ -45,8 +45,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BinzoLife")
 
+
 async def init_database():
-    """Гарантирует существование таблицы наличия топлива при старте."""
+    """Гарантирует инициализацию таблиц базы данных при первом запуске."""
     async with AsyncSessionLocal() as db:
         try:
             await db.execute(text("""
@@ -61,32 +62,40 @@ async def init_database():
                     confidence NUMERIC(5, 2) NOT NULL DEFAULT 0.8,
                     PRIMARY KEY (station_id, fuel_type)
                 );
+                CREATE INDEX IF NOT EXISTS idx_fuel_avail_lookup 
+                ON station_current_fuel (station_id, fuel_type, availability);
             """))
             await db.commit()
-            logger.info("Таблицы базы данных готовы к работе.")
+            logger.info("Таблицы базы данных успешно проверены и готовы к работе.")
         except Exception as e:
             await db.rollback()
-            logger.warning(f"Инициализация БД: {e}")
+            logger.warning(f"Инициализация таблиц БД: {e}")
+
 
 async def run_supervised(coro_fn, task_name: str):
-    """Изолирует ошибки воркеров, предотвращая падение всего бота."""
+    """
+    Супервизор фоновых задач: изолирует ошибки и перезапускает упавший сервис,
+    гарантируя, что бот никогда не прекратит отвечать пользователям в Telegram.
+    """
     while True:
         try:
             await coro_fn()
         except asyncio.CancelledError:
             break
         except Exception as e:
-            logger.error(f"Сбой сервиса [{task_name}]: {e}. Перезапуск через 30 сек.")
+            logger.error(f"Сбой фонового сервиса [{task_name}]: {e}. Перезапуск через 30 сек.")
             await asyncio.sleep(30)
 
+
 async def main():
-    logger.info("Запуск BinzoLife Bot...")
+    logger.info("Инициализация и запуск BinzoLife Bot...")
     await init_database()
 
+    # Инициализация бота и диспетчера
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
 
-    # Middlewares
+    # Подключение Middlewares защиты от флуда
     dp.message.middleware(ThrottlingMiddleware(limit=0.5))
     dp.callback_query.middleware(ThrottlingMiddleware(limit=0.3))
 
@@ -104,7 +113,7 @@ async def main():
     dp.include_router(inline.router)
     dp.include_router(common.router)
 
-    # Фоновые службы
+    # Регистрация фоновых задач
     tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
@@ -117,7 +126,7 @@ async def main():
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("✅ Бот успешно слушает входящие сообщения Telegram!")
+        logger.info("✅ Бот BinzoLife успешно запущен и слушает входящие сообщения Telegram!")
         await dp.start_polling(
             bot,
             allowed_updates=[
@@ -134,7 +143,8 @@ async def main():
         await asyncio.gather(*tasks, return_exceptions=True)
         await bot.session.close()
         await engine.dispose()
-        logger.info("Бот штатно остановлен.")
+        logger.info("Бот BinzoLife штатно остановлен.")
+
 
 if __name__ == "__main__":
     try:
