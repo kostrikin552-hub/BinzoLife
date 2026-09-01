@@ -1,3 +1,4 @@
+# services/data_collector.py
 import asyncio
 import logging
 from typing import Optional, Dict, Any
@@ -7,11 +8,12 @@ from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
-class GdebenzParser:
+
+class DataCollectorService:
     BASE_URL = "https://gdebenz.ru/api/stations"
-    
+
     @staticmethod
-    async def fetch_city_stations(lat_min: float, lat_max: float, lon_min: float, lon_max: float) -> Optional[Dict[str, Any]]:
+    async def fetch_city_data(lat_min: float, lat_max: float, lon_min: float, lon_max: float) -> Optional[Dict[str, Any]]:
         params = {
             "lat_min": lat_min,
             "lat_max": lat_max,
@@ -19,32 +21,29 @@ class GdebenzParser:
             "lon_max": lon_max,
         }
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
         }
+        # Жесткий таймаут 7 сек — исключает зависание всего бота
         timeout = aiohttp.ClientTimeout(total=7.0, connect=3.0)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.get(GdebenzParser.BASE_URL, params=params, headers=headers) as resp:
+                async with session.get(DataCollectorService.BASE_URL, params=params, headers=headers) as resp:
                     if resp.status == 200:
                         return await resp.json()
-                    logger.warning(f"[DataCollector] gdebenz HTTP {resp.status}")
                     return None
-        except asyncio.TimeoutError:
-            logger.warning("[DataCollector] gdebenz таймаут ответа")
-            return None
         except Exception as e:
-            logger.error(f"[DataCollector] Ошибка сети gdebenz: {e}")
+            logger.warning(f"[DataCollector] Сбой запроса к API: {e}")
             return None
 
     @staticmethod
-    async def save_stations_to_db(stations_data: Dict[str, Any]):
-        if not stations_data or "stations" not in stations_data:
+    async def save_to_db(data: Dict[str, Any]):
+        if not data or "stations" not in data:
             return
-        stations = stations_data.get("stations", [])
+        stations = data.get("stations", [])
         if not stations:
             return
 
-        fuel_type_map = {
+        fuel_map = {
             "ai92": "AI-92",
             "ai95": "AI-95",
             "ai98": "AI-98",
@@ -54,24 +53,25 @@ class GdebenzParser:
 
         async with AsyncSessionLocal() as db:
             try:
-                for station in stations:
-                    station_id = station.get("id")
+                for st in stations:
+                    station_id = st.get("id")
                     if not station_id:
                         continue
-                    queue_level = station.get("queue_level", "unknown")
-                    for fuel_code, fuel_info in station.get("fuels", {}).items():
-                        fuel_type = fuel_type_map.get(fuel_code.lower())
+                    queue_level = st.get("queue_level", "unknown")
+                    fuels = st.get("fuels", {})
+                    for f_code, f_val in fuels.items():
+                        fuel_type = fuel_map.get(str(f_code).lower())
                         if not fuel_type:
                             continue
-                        price = fuel_info.get("price")
-                        available = fuel_info.get("available", False)
-                        availability = "available" if available else "unavailable"
-                        
+                        price = f_val.get("price")
+                        is_avail = f_val.get("available", True)
+                        availability = "available" if is_avail else "unavailable"
+
                         await db.execute(text("""
                             INSERT INTO station_current_fuel
                                 (station_id, fuel_type, price, availability, queue_level, observed_at, source, confidence)
                             VALUES
-                                (:station_id, :fuel_type, :price, :availability, :queue_level, NOW(), 'gdebenz', 0.8)
+                                (:station_id, :fuel_type, :price, :availability, :queue_level, NOW(), 'gdebenz', 0.85)
                             ON CONFLICT (station_id, fuel_type) DO UPDATE SET
                                 price = COALESCE(EXCLUDED.price, station_current_fuel.price),
                                 availability = EXCLUDED.availability,
@@ -84,34 +84,33 @@ class GdebenzParser:
                             "fuel_type": fuel_type,
                             "price": price,
                             "availability": availability,
-                            "queue_level": queue_level,
+                            "queue_level": queue_level
                         })
                 await db.commit()
             except Exception as e:
                 await db.rollback()
-                logger.error(f"[DataCollector] Ошибка записи в БД: {e}")
+                logger.error(f"[DataCollector] Ошибка транзакции БД: {e}")
+
 
 async def data_collector_worker():
-    """Фоновый воркер: опрашивает API раз в 15 минут."""
-    logger.info("[DataCollector] Воркер запущен")
-    await asyncio.sleep(10)  # даём боту время на инициализацию
-    
+    """Фоновый воркер сбора данных о наличии топлива и очередях (раз в 15 мин)."""
+    logger.info("[DataCollector] Сервис запущен.")
+    await asyncio.sleep(15)
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                result = await db.execute(text("SELECT id, name, latitude, longitude FROM cities WHERE is_active = True LIMIT 20"))
-                cities = result.mappings().all()
+                res = await db.execute(text("SELECT id, name, latitude, longitude FROM cities WHERE is_active = true LIMIT 30"))
+                cities = res.mappings().all()
 
             for city in cities:
                 lat = float(city["latitude"])
                 lon = float(city["longitude"])
-                data = await GdebenzParser.fetch_city_stations(lat - 0.4, lat + 0.4, lon - 0.4, lon + 0.4)
+                data = await DataCollectorService.fetch_city_data(lat - 0.35, lat + 0.35, lon - 0.35, lon + 0.35)
                 if data:
-                    await GdebenzParser.save_stations_to_db(data)
-                await asyncio.sleep(2)  # пауза между городами
+                    await DataCollectorService.save_to_db(data)
+                await asyncio.sleep(2)  # Плавная нагрузка
         except asyncio.CancelledError:
-            logger.info("[DataCollector] Воркер остановлен")
             break
         except Exception as e:
-            logger.error(f"[DataCollector] Ошибка в итерации: {e}")
+            logger.error(f"[DataCollector] Ошибка итерации: {e}")
         await asyncio.sleep(900)  # 15 минут
