@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ (исправлен импорт парсера)
+# main.py — ПОЛНАЯ РАБОЧАЯ ВЕРСИЯ (исправлены импорты и воркеры)
 import asyncio
 import logging
 import sys
@@ -22,7 +22,7 @@ from handlers import (
 # Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.fuelprice_parser import run_parser          # <-- ИСПРАВЛЕНО (было fuel_price_parser_worker)
+from services.fuelprice_parser import fuel_price_parser_worker   # <-- ИСПРАВЛЕНО
 from services.subscription import subscription_expiration_worker
 from services.notifications import price_alert_worker
 from services.pro_notifications import pro_reminder_worker
@@ -103,7 +103,7 @@ async def main():
     tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
-        asyncio.create_task(run_supervised(run_parser, "FuelPriceParser")),  # <-- ИСПРАВЛЕНО
+        asyncio.create_task(run_supervised(fuel_price_parser_worker, "FuelPriceParser")),
         asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
         asyncio.create_task(run_supervised(lambda: price_alert_worker(bot), "PriceAlerts")),
         asyncio.create_task(run_supervised(lambda: pro_reminder_worker(bot), "ProReminders")),
