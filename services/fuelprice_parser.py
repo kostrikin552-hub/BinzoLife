@@ -1,3 +1,4 @@
+# services/fuelprice_parser.py
 import aiohttp
 import asyncio
 import logging
@@ -6,10 +7,15 @@ import re
 from datetime import datetime, timezone
 from bs4 import BeautifulSoup
 from sqlalchemy.exc import IntegrityError
+
 from database.session import AsyncSessionLocal
 from database.crud import (
-    get_city_by_name, get_all_active_stations_by_city, save_price,
-    get_city_slug, set_city_slug
+    get_city_by_name,
+    get_all_active_stations_by_city,
+    save_price,
+    get_city_slug,
+    set_city_slug,
+    get_or_create_city,
 )
 from database.models import FuelType, SourceType
 from utils.helpers import haversine_distance
@@ -17,6 +23,7 @@ from utils.cleaners import normalize_name, clean_address, get_brand_from_name, i
 
 logger = logging.getLogger(__name__)
 
+# Сопоставление слагов городов (fallback)
 FALLBACK_SLUGS = {
     "Красноярск": "krasnoyarsk",
     "Москва": "moskva",
@@ -42,7 +49,7 @@ BRAND_KEYWORDS = [
     'СКОН', 'Varta'
 ]
 
-# ===== КАРТА ТОПЛИВА ДЛЯ ПАРСИНГА =====
+# Карта типов топлива для парсинга
 FUEL_TYPE_MAP = {
     "Аи-92": FuelType.AI_92,
     "АИ-92": FuelType.AI_92,
@@ -56,9 +63,13 @@ FUEL_TYPE_MAP = {
     "ДТ-З": FuelType.DT,
     "ДТ-Е": FuelType.DT,
 }
-# =====================================
+
 
 async def fetch_fuelprice_prices(city_name: str = "Красноярск", retries: int = 3):
+    """
+    Основная функция парсинга цен для одного города.
+    Скачивает страницу fuelprice.ru, извлекает цены и сохраняет в БД.
+    """
     logger.info(f"=== fetch_fuelprice_prices() для {city_name} ===")
     async with AsyncSessionLocal() as db:
         city = await get_city_by_name(db, city_name)
@@ -98,12 +109,15 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                         logger.info(f"Страница загружена, размер {len(html)} байт")
 
                 # ---- JS-массивы (основной метод) ----
-                pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
+                pattern = re.compile(
+                    r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]'
+                )
                 matches = pattern.findall(html)
                 if matches:
                     logger.info(f"Найдены JS-массивы для {city_name}")
                     updated_count = 0
                     updates = []  # (station, fuel_type, price)
+
                     for match in matches:
                         try:
                             lat = float(match[0])
@@ -116,35 +130,31 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             clean_name = normalize_name(raw_name)
                             clean_addr = clean_address(raw_address, max_length=255)
 
-                            # ---- Ищем цены для ВСЕХ видов топлива ----
+                            # Парсим цены для всех видов топлива из fuel_data
                             prices_by_fuel = {}
-                            # Сначала пробуем извлечь из fuel_data (обычно там несколько топлив)
                             if fuel_data:
-                                # Ищем все марки топлива в строке
                                 for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
-                                    pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
-                                    match_price = pattern.search(fuel_data)
-                                    if match_price:
+                                    p = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                                    m = p.search(fuel_data)
+                                    if m:
                                         try:
-                                            price = float(match_price.group(1).replace(',', '.'))
+                                            price = float(m.group(1).replace(',', '.'))
                                             if is_valid_price(price):
                                                 prices_by_fuel[fuel_type] = price
                                         except:
                                             pass
-                            # Если fuel_data пустой или не нашлось, пробуем взять общую цену из price_str
                             if not prices_by_fuel and price_str:
                                 try:
                                     price = float(price_str.replace(',', '.'))
                                     if is_valid_price(price):
-                                        # Предполагаем, что это АИ-95 (по умолчанию)
-                                        prices_by_fuel[FuelType.AI_95] = price
+                                        prices_by_fuel[FuelType.AI_95] = price  # дефолт
                                 except:
                                     pass
 
                             if not prices_by_fuel:
                                 continue
 
-                            # Ищем станцию
+                            # Поиск станции
                             station = None
                             for s in stations:
                                 dist = haversine_distance(lat, lon, s.latitude, s.longitude)
@@ -178,11 +188,10 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                                 station.latitude = lat
                                 station.longitude = lon
 
-                            # Сохраняем цены для всех найденных типов топлива
                             for fuel_type, price in prices_by_fuel.items():
                                 updates.append((station, fuel_type, price))
                                 updated_count += 1
-                                logger.info(f"Обновлено: {station.name}, {fuel_type.value} = {price} ₽, координаты {lat},{lon}")
+                                logger.info(f"Обновлено: {station.name}, {fuel_type.value} = {price} ₽")
 
                         except Exception as e:
                             logger.error(f"Ошибка обработки блока: {e}")
@@ -209,7 +218,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                 updated_count = 0
                 current_name = None
                 current_address = None
-                current_prices = {}  # fuel_type -> price
+                current_prices = {}
 
                 for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
                     text = elem.get_text(strip=True)
@@ -218,6 +227,7 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
 
                     is_brand = any(b in text for b in BRAND_KEYWORDS)
                     if is_brand and len(text) < 150:
+                        # Сохраняем предыдущую станцию, если есть
                         if current_name and current_prices:
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
@@ -242,19 +252,17 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
                             continue
 
                     if current_name:
-                        # Ищем цены для всех видов топлива
                         for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
-                            pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
-                            match_price = pattern.search(text)
-                            if match_price:
+                            p = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                            m = p.search(text)
+                            if m:
                                 try:
-                                    price = float(match_price.group(1).replace(',', '.'))
+                                    price = float(m.group(1).replace(',', '.'))
                                     if is_valid_price(price):
                                         current_prices[fuel_type] = price
                                 except:
                                     pass
 
-                        # Если нашли хоть одну цену, сохраняем и сбрасываем
                         if current_prices:
                             station = await find_station(db, stations, current_name, current_address, None, None)
                             if station:
@@ -305,7 +313,11 @@ async def fetch_fuelprice_prices(city_name: str = "Красноярск", retrie
             else:
                 logger.error(f"Все попытки для {city_name} провалены")
 
+
 async def find_station(db, stations, name: str, address: str, lat: float = None, lon: float = None):
+    """
+    Поиск станции по координатам, названию, адресу или бренду.
+    """
     if lat is not None and lon is not None and lat != 0.0 and lon != 0.0:
         for s in stations:
             dist = haversine_distance(lat, lon, s.latitude, s.longitude)
@@ -331,22 +343,49 @@ async def find_station(db, stations, name: str, address: str, lat: float = None,
                 return s
 
     return None
+
+
+async def parse_all_cities():
+    """
+    Функция для парсинга всех активных городов.
+    Вызывается из воркера для полного цикла обновления.
+    """
+    from database.crud import get_all_active_cities
+    async with AsyncSessionLocal() as db:
+        cities = await get_all_active_cities(db)
+        if not cities:
+            logger.warning("Нет активных городов для парсинга")
+            return
+        for city in cities:
+            try:
+                await fetch_fuelprice_prices(city.name)
+                logger.info(f"Парсинг {city.name} завершён")
+            except Exception as e:
+                logger.error(f"Ошибка парсинга {city.name}: {e}")
+            await asyncio.sleep(1)
+
+
+# ============================================================
+# ФОНОВЫЙ ВОРКЕР ДЛЯ ПЕРИОДИЧЕСКОГО ЗАПУСКА ПАРСЕРА
+# ============================================================
 async def fuel_price_parser_worker():
-    """Фоновый воркер для периодического парсинга цен (раз в 4 часа)."""
+    """
+    Фоновый воркер, который запускает парсинг всех городов каждые 4 часа.
+    Используется в main.py как отдельная задача.
+    """
     logger.info("[FuelPriceParser] Воркер запущен")
-    await asyncio.sleep(30)  # Даем боту время на полный старт
+    await asyncio.sleep(30)  # Даём боту время на полный старт
+
     while True:
         try:
-            # Вызов вашей основной функции парсинга
-            if "run_parser" in globals():
-                await run_parser()
-            elif "parse_all_cities" in globals():
-                await parse_all_cities()
-            else:
-                logger.warning("[FuelPriceParser] Основная функция парсера не найдена.")
+            logger.info("[FuelPriceParser] Запуск цикла парсинга цен...")
+            await parse_all_cities()
+            logger.info("[FuelPriceParser] Цикл парсинга завершён")
         except asyncio.CancelledError:
-            logger.info("[FuelPriceParser] Воркер остановлен.")
+            logger.info("[FuelPriceParser] Воркер остановлен")
             break
         except Exception as e:
-            logger.error(f"[FuelPriceParser] Ошибка при парсинге: {e}")
-        await asyncio.sleep(14400)  # 4 часа
+            logger.error(f"[FuelPriceParser] Ошибка в цикле парсинга: {e}", exc_info=True)
+
+        # Интервал между полными циклами — 4 часа (14400 секунд)
+        await asyncio.sleep(14400)
