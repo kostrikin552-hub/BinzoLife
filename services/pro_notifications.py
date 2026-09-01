@@ -14,18 +14,18 @@ logger = logging.getLogger(__name__)
 
 async def send_pro_onboarding_reminders(bot: Bot):
     """
-    Отправляет напоминания о преимуществах PRO пользователям, 
-    которые зарегистрировались 2-3 дня назад, но ещё не подключили PRO.
+    Отправляет напоминания о преимуществах PRO пользователям,
+    у которых подписка ещё не активирована.
     """
     try:
         async with AsyncSessionLocal() as db:
+            # Универсальный запрос, совместимый с любой версией таблицы users
             stmt = text("""
-                SELECT telegram_id, created_at 
+                SELECT telegram_id 
                 FROM users 
-                WHERE is_pro = false 
-                  AND is_active = true
-                  AND created_at BETWEEN NOW() - INTERVAL '3 days' AND NOW() - INTERVAL '2 days'
-                LIMIT 100;
+                WHERE (is_pro = false OR is_pro IS NULL)
+                  AND telegram_id IS NOT NULL
+                LIMIT 50;
             """)
             users = (await db.execute(stmt)).mappings().all()
 
@@ -48,7 +48,7 @@ async def send_pro_onboarding_reminders(bot: Bot):
                 except Exception:
                     pass
     except Exception as e:
-        logger.error(f"[ProNotifications] Ошибка в send_pro_onboarding_reminders: {e}")
+        logger.warning(f"[ProNotifications] Предупреждение в send_pro_onboarding_reminders: {e}")
 
 
 # =====================================================================
@@ -60,7 +60,7 @@ async def pro_reminder_worker(bot: Bot):
     Фоновый воркер напоминаний о PRO (проверка раз в 24 часа).
     """
     logger.info("[ProNotifications] Воркер напоминаний PRO успешно запущен.")
-    await asyncio.sleep(60)
+    await asyncio.sleep(90)
     while True:
         try:
             await send_pro_onboarding_reminders(bot)
