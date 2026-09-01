@@ -1,16 +1,17 @@
 import os
 import sys
-from typing import List, Optional
+from typing import List, Optional, Any, Dict, Union
 from dotenv import load_dotenv
 
 # Загрузка переменных окружения из .env файла
 load_dotenv()
 
+
 class Settings:
     """Универсальный класс настроек проекта BinzoLife."""
 
     def __init__(self):
-        # 1. ТОКЕН БОТА
+        # 1. ТОКЕН БОТА TELEGRAM
         self.BOT_TOKEN: str = (
             os.getenv("BOT_TOKEN")
             or os.getenv("TELEGRAM_BOT_TOKEN")
@@ -27,7 +28,7 @@ class Settings:
             os.getenv("DATABASE_URL")
             or os.getenv("DB_URL")
             or os.getenv("POSTGRES_URL")
-            or "postgresql+asyncpg://postgres:postgres@localhost:5432/binzolife"
+            or "postgresql+asyncpg://binzolife_bd_user:rv2lSzCESh94iuflMUGEn23RihYRv6Cn@dpg-dabe1qad0e5s73e6besg-a/binzolife_bd"
         )
 
         # Автоматическая адаптация URL для SQLAlchemy + asyncpg
@@ -72,16 +73,14 @@ class Settings:
         self.DEBUG: bool = os.getenv("DEBUG", "false").lower() in ("true", "1", "yes")
 
     def __getattr__(self, name: str) -> Any:
-        # Безопасный возврат переменной окружения, если запрошен неизвестный атрибут
         return os.getenv(name, "")
 
 
-# Создаем глобальный синглтон settings
+# Создаем синглтон настроек
 settings = Settings()
 
 # =====================================================================
 # ПРЯМЫЕ ЭКСПОРТЫ ДЛЯ СОВМЕСТИМОСТИ
-# (для модулей, импортирующих 'from config import BOT_TOKEN, DATABASE_URL')
 # =====================================================================
 BOT_TOKEN: str = settings.BOT_TOKEN
 TOKEN: str = settings.TOKEN
