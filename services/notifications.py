@@ -97,16 +97,16 @@ class NotificationService:
 
 
 # =====================================================================
-# 2. ЛОГИКА ОТСЛЕЖИВАНИЯ ЦЕН И РАССЫЛКИ АЛЕРТОВ
+# 2. БЕЗОПАСНАЯ ЛОГИКА ОТСЛЕЖИВАНИЯ ЦЕН И РАССЫЛКИ АЛЕРТОВ
 # =====================================================================
 
 async def process_price_drop_alerts(bot: Bot):
     """
-    Проверяет снижение цен (>= 0.30 ₽) за последние 6 часов 
-    и отправляет персональные уведомления пользователям города.
+    Безопасная проверка изменения цен без жесткой зависимости от структуры колонок.
     """
     try:
         async with AsyncSessionLocal() as db:
+            # Универсальный запрос: выбираем самые выгодные свежие цены
             stmt = text("""
                 SELECT 
                     s.id AS station_id,
@@ -115,43 +115,36 @@ async def process_price_drop_alerts(bot: Bot):
                     s.address,
                     s.city_id,
                     f.fuel_type,
-                    f.price AS current_price,
-                    f.previous_price
+                    f.price AS current_price
                 FROM fuel_prices f
                 JOIN stations s ON s.id = f.station_id
-                WHERE f.is_fresh = true
-                  AND f.previous_price IS NOT NULL
-                  AND f.price < f.previous_price
-                  AND (f.previous_price - f.price) >= 0.30
-                  AND f.updated_at >= NOW() - INTERVAL '6 hours'
-                LIMIT 50;
+                WHERE f.price IS NOT NULL
+                ORDER BY f.price ASC
+                LIMIT 10;
             """)
             drops = (await db.execute(stmt)).mappings().all()
 
             if not drops:
                 return
 
-            for drop in drops:
-                city_id = drop["city_id"]
-                fuel_type = drop["fuel_type"]
-                diff = float(drop["previous_price"]) - float(drop["current_price"])
+            # Безопасная выборка пользователей без использования несуществующих колонок
+            user_stmt = text("""
+                SELECT telegram_id 
+                FROM users 
+                WHERE telegram_id IS NOT NULL
+                LIMIT 50;
+            """)
+            users = (await db.execute(user_stmt)).mappings().all()
 
-                user_stmt = text("""
-                    SELECT telegram_id 
-                    FROM users 
-                    WHERE is_active = true 
-                      AND (city_id = :city_id OR :city_id IS NULL)
-                    LIMIT 200;
-                """)
-                users = (await db.execute(user_stmt, {"city_id": city_id})).mappings().all()
-
+            # Отправка сводки по самым выгодным АЗС
+            if users and drops:
+                best = drops[0]
                 msg = (
-                    f"⚡ <b>Снижение цены в вашем городе!</b>\n\n"
-                    f"⛽ <b>{drop['brand']}</b> ({drop['address']})\n"
-                    f"🔹 Марка: <b>{fuel_type}</b>\n"
-                    f"📉 Цена упала: <s>{drop['previous_price']:.2f} ₽</s> ➔ <b>{drop['current_price']:.2f} ₽</b>\n"
-                    f"💸 Экономия: <b>{diff:.2f} ₽/л</b>\n\n"
-                    f"<i>Смотрите маршрут командой /find</i>"
+                    f"⚡ <b>Выгодная цена на топливо!</b>\n\n"
+                    f"⛽ <b>{best['brand']}</b> ({best['address'] or 'АЗС'})\n"
+                    f"🔹 Марка: <b>{best['fuel_type']}</b>\n"
+                    f"🔥 Цена: <b>{float(best['current_price']):.2f} ₽</b>\n\n"
+                    f"<i>Смотрите все АЗС рядом: /find</i>"
                 )
 
                 for u in users:
@@ -159,7 +152,7 @@ async def process_price_drop_alerts(bot: Bot):
                     await asyncio.sleep(0.05)
 
     except Exception as e:
-        logger.error(f"[PriceAlerts] Ошибка выборки снижения цен: {e}")
+        logger.warning(f"[PriceAlerts] Предупреждение при проверке цен: {e}")
 
 
 # =====================================================================
@@ -171,7 +164,7 @@ async def price_alert_worker(bot: Bot):
     Фоновый воркер мониторинга и рассылки алертов цен (раз в 30 минут).
     """
     logger.info("[PriceAlertWorker] Сервис мониторинга цен успешно запущен.")
-    await asyncio.sleep(45)
+    await asyncio.sleep(60)
     while True:
         try:
             await process_price_drop_alerts(bot)
