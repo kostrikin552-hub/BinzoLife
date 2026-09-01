@@ -13,7 +13,7 @@ import config
 from database.session import engine, AsyncSessionLocal
 from middlewares.throttling import ThrottlingMiddleware
 
-# Все роутеры
+# Роутеры
 from handlers import (
     admin,
     start,
@@ -29,7 +29,7 @@ from handlers import (
     common,
 )
 
-# Все фоновые сервисы
+# Фоновые службы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
 from services.fuelprice_parser import fuel_price_parser_worker
@@ -46,7 +46,7 @@ logging.basicConfig(
 logger = logging.getLogger("BinzoLife")
 
 async def init_database():
-    """Гарантирует существование необходимых таблиц при первом старте."""
+    """Гарантирует существование таблицы наличия топлива при старте."""
     async with AsyncSessionLocal() as db:
         try:
             await db.execute(text("""
@@ -63,10 +63,10 @@ async def init_database():
                 );
             """))
             await db.commit()
-            logger.info("Таблицы базы данных проверены и готовы к работе.")
+            logger.info("Таблицы базы данных готовы к работе.")
         except Exception as e:
             await db.rollback()
-            logger.warning(f"Инициализация таблиц БД: {e}")
+            logger.warning(f"Инициализация БД: {e}")
 
 async def run_supervised(coro_fn, task_name: str):
     """Изолирует ошибки воркеров, предотвращая падение всего бота."""
@@ -104,7 +104,7 @@ async def main():
     dp.include_router(inline.router)
     dp.include_router(common.router)
 
-    # Запуск фоновых служб
+    # Фоновые службы
     tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
