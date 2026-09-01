@@ -1,72 +1,85 @@
+import asyncio
 import logging
-from datetime import datetime, timezone
-from sqlalchemy import select, func
-from database.session import AsyncSessionLocal
-from database.models import User, Station, FuelPrice, FuelType
-from config import settings
+from datetime import datetime
 from aiogram import Bot
+from sqlalchemy import text
+from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
-bot = Bot(token=settings.BOT_TOKEN)
 
-async def send_friday_fuel_radar():
-    """Отправляет пятничный радар цен всем пользователям."""
-    # Проверяем, что сегодня пятница
-    if datetime.now(timezone.utc).weekday() != 4:  # 4 = пятница
-        return
-
+async def get_city_top3_stations(city_id: int):
+    """Получает топ-3 самые дешёвые АЗС в городе (АИ-95) одним запросом."""
     async with AsyncSessionLocal() as db:
-        users = await db.execute(
-            select(User).where(
-                User.telegram_id.is_not(None),
-                User.telegram_id > 0
-            )
-        )
-        users = users.scalars().all()
+        res = await db.execute(text("""
+            SELECT s.brand, s.address, f.price
+            FROM stations s
+            JOIN station_current_fuel f ON s.id = f.station_id
+            WHERE s.city_id = :city_id AND f.fuel_type = 'AI-95' AND f.availability = 'available'
+            ORDER BY f.price ASC
+            LIMIT 3
+        """), {"city_id": city_id})
+        return res.mappings().all()
 
-        for user in users:
-            try:
-                # Находим топ-3 дешёвые АЗС в городе пользователя
-                if not user.city_id:
-                    continue
+async def send_friday_radar(bot: Bot):
+    """Рассылает пятничный радар цен всем пользователям."""
+    logger.info("[Radar] Запуск формирования пятничного радара...")
+    
+    try:
+        async with AsyncSessionLocal() as db:
+            # Получаем всех пользователей с указанным городом
+            res = await db.execute(text("""
+                SELECT telegram_id, city_id, is_pro 
+                FROM users 
+                WHERE city_id IS NOT NULL AND telegram_id IS NOT NULL
+            """))
+            users = res.mappings().all()
 
-                cheapest = await db.execute(
-                    select(Station, FuelPrice.price)
-                    .join(FuelPrice, FuelPrice.station_id == Station.id)
-                    .where(
-                        Station.city_id == user.city_id,
-                        FuelPrice.fuel_type == FuelType.AI_95,
-                        FuelPrice.is_fresh == True,
-                        FuelPrice.price > 0
-                    )
-                    .order_by(FuelPrice.price.asc())
-                    .limit(3)
-                )
-                stations = cheapest.all()
+        if not users:
+            logger.info("[Radar] Нет пользователей для рассылки")
+            return
 
-                if not stations:
-                    continue
+        # Кешируем топы по городам
+        city_tops = {}
 
-                text = "🚗 <b>Пятничный радар цен перед выходными!</b>\n\n"
-                text += "⚡ Цены на бензин в вашем городе обновились.\n"
-                text += "💡 <i>Заправьте полный бак сегодня до вечерних пробок и сэкономьте до 350 ₽.</i>\n\n"
-                text += "📍 <b>Топ-3 дешёвых АЗС:</b>\n"
-
-                for i, (station, price) in enumerate(stations, 1):
-                    text += f"{i}. {station.name} — {price:.2f} ₽/л\n"
-
-                text += "\n👇 Нажмите кнопку ниже, чтобы увидеть все дешёвые АЗС рядом:"
-
-                await bot.send_message(
-                    user.telegram_id,
-                    text,
-                    parse_mode="HTML",
-                    reply_markup={
-                        "inline_keyboard": [
-                            [{"text": "🔍 Найти дешёвые АЗС рядом", "callback_data": "quick_search_cheapest"}]
-                        ]
-                    }
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки радара пользователю {user.telegram_id}: {e}")
+        for u in users:
+            city_id = u["city_id"]
+            if city_id not in city_tops:
+                city_tops[city_id] = await get_city_top3_stations(city_id)
+            
+            top = city_tops[city_id]
+            if not top:
                 continue
+
+            text_lines = ["🚗 <b>Пятничный радар цен BinzoLife</b>\nЛучшие цены на АИ-95 перед выходными:\n"]
+            for idx, item in enumerate(top, 1):
+                text_lines.append(f"{idx}. <b>{item['brand']}</b> ({item['address']}) — <b>{item['price']:.2f} ₽</b>")
+            
+            text_lines.append("\n💡 <i>Сэкономьте до 250 ₽ на полном баке!</i>")
+            msg_text = "\n".join(text_lines)
+
+            try:
+                await bot.send_message(u["telegram_id"], msg_text, parse_mode="HTML")
+                await asyncio.sleep(0.05)  # защита от лимитов Telegram
+            except Exception as send_err:
+                logger.debug(f"[Radar] Не удалось отправить пользователю {u['telegram_id']}: {send_err}")
+
+        logger.info(f"[Radar] Рассылка завершена для {len(users)} пользователей.")
+    except Exception as e:
+        logger.error(f"[Radar] Критическая ошибка в рассылке радара: {e}")
+
+async def friday_radar_worker(bot: Bot):
+    """Фоновый планировщик: проверяет наступление пятницы 17:00."""
+    logger.info("[Radar] Планировщик радара запущен")
+    while True:
+        try:
+            now = datetime.now()
+            # Пятница (weekday == 4), время 17:00–17:05
+            if now.weekday() == 4 and now.hour == 17 and now.minute < 10:
+                await send_friday_radar(bot)
+                # Ждём 1 час, чтобы не отправить повторно в этот же день
+                await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"[Radar] Ошибка планировщика: {e}")
+        await asyncio.sleep(60)
