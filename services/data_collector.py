@@ -1,4 +1,4 @@
-# services/data_collector.py
+# services/data_collector.py — исправленная версия (защита от None)
 import asyncio
 import logging
 from typing import Optional, Dict, Any
@@ -23,7 +23,6 @@ class DataCollectorService:
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
         }
-        # Жесткий таймаут 7 сек — исключает зависание всего бота
         timeout = aiohttp.ClientTimeout(total=7.0, connect=3.0)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -99,12 +98,34 @@ async def data_collector_worker():
     while True:
         try:
             async with AsyncSessionLocal() as db:
-                res = await db.execute(text("SELECT id, name, latitude, longitude FROM cities WHERE is_active = true LIMIT 30"))
+                res = await db.execute(text("""
+                    SELECT id, name, latitude, longitude 
+                    FROM cities 
+                    WHERE is_active = true 
+                      AND latitude IS NOT NULL 
+                      AND longitude IS NOT NULL
+                """))
                 cities = res.mappings().all()
 
             for city in cities:
-                lat = float(city["latitude"])
-                lon = float(city["longitude"])
+                # --- ЗАЩИТА ОТ None ---
+                lat = city.get("latitude")
+                lon = city.get("longitude")
+                if lat is None or lon is None:
+                    logger.warning(f"[DataCollector] Город {city.get('name')} имеет координаты None, пропускаем.")
+                    continue
+                try:
+                    lat = float(lat)
+                    lon = float(lon)
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"[DataCollector] Ошибка преобразования координат города {city.get('name')}: {e}")
+                    continue
+
+                # Проверка, что координаты не нулевые (часто означают не заданные)
+                if abs(lat) < 0.0001 and abs(lon) < 0.0001:
+                    logger.warning(f"[DataCollector] Город {city.get('name')} имеет нулевые координаты, пропускаем.")
+                    continue
+
                 data = await DataCollectorService.fetch_city_data(lat - 0.35, lat + 0.35, lon - 0.35, lon + 0.35)
                 if data:
                     await DataCollectorService.save_to_db(data)
