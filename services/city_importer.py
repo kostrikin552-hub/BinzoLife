@@ -1,3 +1,4 @@
+# services/city_importer.py (исправленная версия)
 import logging
 import re
 import asyncio
@@ -50,7 +51,6 @@ ADDRESS_KEYWORDS = [
     'дом', 'корп', 'строение', 'проезд', 'пр-д', 'АЗС №'
 ]
 
-# ===== КАРТА ТОПЛИВА ДЛЯ ПАРСИНГА =====
 FUEL_TYPE_MAP = {
     "Аи-92": FuelType.AI_92,
     "АИ-92": FuelType.AI_92,
@@ -64,7 +64,7 @@ FUEL_TYPE_MAP = {
     "ДТ-З": FuelType.DT,
     "ДТ-Е": FuelType.DT,
 }
-# =====================================
+
 
 def is_address(text: str) -> bool:
     if not text:
@@ -77,6 +77,7 @@ def is_address(text: str) -> bool:
         return True
     return False
 
+
 def truncate_string(value: str, max_length: int = 255) -> str:
     if not value:
         return ""
@@ -84,23 +85,29 @@ def truncate_string(value: str, max_length: int = 255) -> str:
         return value[:max_length]
     return value
 
+
 async def fetch_html_with_retry(url: str, retries: int = 3, delay: float = 2.0) -> Optional[str]:
+    """Загружает HTML с таймаутом и повторными попытками."""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9",
     }
+    timeout = aiohttp.ClientTimeout(total=30, connect=10)  # Жёсткий таймаут
     for attempt in range(retries):
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, timeout=30) as resp:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
                         return await resp.text()
                     else:
                         logger.warning(f"HTTP {resp.status} при попытке {attempt+1} для {url}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Таймаут при загрузке {url} (попытка {attempt+1})")
         except Exception as e:
             logger.warning(f"Ошибка загрузки {url} (попытка {attempt+1}): {e}")
         await asyncio.sleep(delay * (attempt + 1))
     return None
+
 
 def extract_city_name_from_html(html: str, slug: str) -> str:
     soup = BeautifulSoup(html, 'html.parser')
@@ -121,30 +128,68 @@ def extract_city_name_from_html(html: str, slug: str) -> str:
                     return candidate.strip()
     return SLUG_TO_CITY.get(slug, slug.replace('-', ' ').title())
 
+
 def parse_stations_from_html(html: str) -> List[Tuple[str, str, Dict[FuelType, float], float, float]]:
     """
     Парсит страницу и возвращает список станций.
-    Каждая станция: (название, адрес, словарь {FuelType: price}, lat, lon)
+    Использует JS-массивы как основной метод, BeautifulSoup как fallback.
     """
     soup = BeautifulSoup(html, 'html.parser')
     stations = []
     current_name = None
     current_address = None
-    current_prices = {}  # fuel_type -> price
+    current_prices = {}
     current_lat = None
     current_lon = None
 
-    # Пробуем извлечь координаты из JS-массивов
+    # --- Основной метод: извлечение из JS-массивов (более надёжный) ---
     js_pattern = re.compile(r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*\'([^\']*)\',\s*([^,]+),\s*([^,]+),\s*([^\]]+)\]')
     js_matches = js_pattern.findall(html)
-    coords_map = {}
     if js_matches:
+        logger.info(f"Найдено {len(js_matches)} JS-записей")
         for match in js_matches:
-            lat = float(match[0])
-            lon = float(match[1])
-            name = match[2].strip()
-            coords_map[name] = (lat, lon)
+            try:
+                lat = float(match[0])
+                lon = float(match[1])
+                raw_name = match[2].strip()
+                raw_address = match[3].strip()
+                fuel_data = match[4] if len(match) > 4 else ''
+                price_str = match[5] if len(match) > 5 else ''
 
+                clean_name = normalize_name(raw_name)
+                clean_addr = clean_address(raw_address, max_length=255)
+
+                prices_by_fuel = {}
+                if fuel_data:
+                    for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
+                        p = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                        m = p.search(fuel_data)
+                        if m:
+                            try:
+                                price = float(m.group(1).replace(',', '.'))
+                                if is_valid_price(price):
+                                    prices_by_fuel[fuel_type] = price
+                            except:
+                                pass
+                if not prices_by_fuel and price_str:
+                    try:
+                        price = float(price_str.replace(',', '.'))
+                        if is_valid_price(price):
+                            prices_by_fuel[FuelType.AI_95] = price  # дефолт
+                    except:
+                        pass
+
+                if not prices_by_fuel:
+                    continue
+
+                stations.append((clean_name or raw_name, clean_addr or raw_address, prices_by_fuel, lat, lon))
+            except Exception as e:
+                logger.warning(f"Ошибка обработки JS-записи: {e}")
+        if stations:
+            return stations
+
+    # --- Fallback: BeautifulSoup (если JS не сработал) ---
+    logger.info("JS-массивы не дали результатов, пробуем BeautifulSoup")
     for elem in soup.find_all(['h2', 'h3', 'strong', 'p', 'div']):
         text = elem.get_text(strip=True)
         if not text:
@@ -152,56 +197,49 @@ def parse_stations_from_html(html: str) -> List[Tuple[str, str, Dict[FuelType, f
 
         clean_text = re.sub(r'<[^>]+>', '', text)
 
-        # Проверяем, является ли это брендом (началом новой станции)
         is_brand = any(b in clean_text for b in BRAND_KEYWORDS)
         if is_brand and len(clean_text) < 150:
-            # Сохраняем предыдущую станцию, если есть
             if current_name and current_prices:
-                lat, lon = coords_map.get(current_name, (None, None))
-                stations.append((current_name, current_address or "", current_prices, lat or 0.0, lon or 0.0))
+                stations.append((current_name, current_address or "", current_prices, 0.0, 0.0))
             current_name = clean_text
             current_address = None
             current_prices = {}
-            current_lat = None
-            current_lon = None
             continue
 
         if current_name and not current_address:
             if is_address(clean_text):
                 current_address = clean_text
                 continue
-            if re.search(r'АЗС №|г\.|город|ул\.|шоссе|проезд|вл\.', clean_text, re.I):
-                current_address = clean_text
-                continue
-            if len(clean_text) < 200 and not re.search(r'\d+\.?\d*\s*₽', clean_text):
-                current_address = clean_text
-                continue
 
-        # Ищем цены для всех видов топлива
         if current_name:
             for fuel_key, fuel_type in FUEL_TYPE_MAP.items():
-                pattern = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
-                match_price = pattern.search(clean_text)
-                if match_price:
+                p = re.compile(rf'{re.escape(fuel_key)}\s*[:：]\s*([\d.,]+)')
+                m = p.search(clean_text)
+                if m:
                     try:
-                        price = float(match_price.group(1).replace(',', '.'))
+                        price = float(m.group(1).replace(',', '.'))
                         if is_valid_price(price):
                             current_prices[fuel_type] = price
-                    except ValueError:
+                    except:
                         pass
 
-        # Если есть цены и мы нашли их все (или есть подозрение, что это конец блока), сохраняем
-        # Для простоты будем считать, что если у нас есть цены и следующий элемент не является брендом,
-        # то мы можем продолжать собирать. Но мы сохраняем станцию, когда встречаем новый бренд или в конце.
+            if current_prices:
+                stations.append((current_name, current_address or "", current_prices, 0.0, 0.0))
+                current_name = None
+                current_address = None
+                current_prices = {}
 
-    # Сохраняем последнюю станцию
     if current_name and current_prices:
-        lat, lon = coords_map.get(current_name, (None, None))
-        stations.append((current_name, current_address or "", current_prices, lat or 0.0, lon or 0.0))
+        stations.append((current_name, current_address or "", current_prices, 0.0, 0.0))
 
     return stations
 
+
 async def import_city_from_url(url: str) -> Dict[str, Any]:
+    """
+    Импортирует город с fuelprice.ru.
+    Возвращает словарь с результатами или ошибкой.
+    """
     logger.info(f"Начинаем импорт города из URL: {url}")
 
     slug_match = re.search(r'fuelprice\.ru/([^/?]+)', url)
@@ -227,6 +265,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                 await db.rollback()
                 return {"error": f"Не удалось создать город {city_name}"}
 
+            # Установка слага с обработкой конфликта
             existing_slug = await get_city_slug(db, city_name)
             if not existing_slug:
                 try:
@@ -234,16 +273,18 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                     logger.info(f"Слаг {slug} установлен для города {city_name}")
                 except IntegrityError:
                     await db.rollback()
-                    existing_slug = await get_city_slug(db, city_name)
-                    if not existing_slug:
-                        alt_slug = f"{slug}_{city.id}"
-                        try:
-                            await set_city_slug(db, city.id, alt_slug)
-                            logger.info(f"Слаг {alt_slug} установлен для города {city_name}")
-                        except IntegrityError:
-                            logger.error(f"Не удалось установить слаг для {city_name}")
-                            await db.rollback()
-                            return {"error": f"Не удалось установить слаг для {city_name}"}
+                    # Пробуем альтернативный слаг
+                    alt_slug = f"{slug}_{city.id}"
+                    try:
+                        await set_city_slug(db, city.id, alt_slug)
+                        logger.info(f"Слаг {alt_slug} установлен для города {city_name}")
+                    except IntegrityError:
+                        logger.error(f"Не удалось установить слаг для {city_name}")
+                        await db.rollback()
+                        return {"error": f"Не удалось установить слаг для {city_name}"}
+                except Exception as e:
+                    await db.rollback()
+                    return {"error": f"Ошибка установки слага: {e}"}
 
             city_id = city.id
 
@@ -261,14 +302,13 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
             for name, address, prices_by_fuel, lat, lon in station_data:
                 try:
                     if not prices_by_fuel:
-                        logger.debug(f"Нет цен для станции {name}, пропускаем")
                         continue
 
                     clean_name = normalize_name(name)
                     clean_name = truncate_string(clean_name, 255)
                     clean_addr = clean_address(address, max_length=255) if address else ""
 
-                    # Ищем станцию по координатам
+                    # Поиск станции по координатам
                     station = None
                     if lat != 0.0 and lon != 0.0:
                         key = (round(lat, 6), round(lon, 6))
@@ -307,7 +347,7 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                             station.longitude = lon
                             updated_coords += 1
 
-                    # Сохраняем все цены для этой станции
+                    # Сохраняем все цены
                     for fuel_type, price in prices_by_fuel.items():
                         price_entry = FuelPrice(
                             station_id=station.id,
@@ -322,7 +362,8 @@ async def import_city_from_url(url: str) -> Dict[str, Any]:
                         updated_prices += 1
 
                 except Exception as e:
-                    logger.error(f"Ошибка при обработке записи {name}: {e}")
+                    logger.error(f"Ошибка обработки записи {name}: {e}")
+                    # Откатываем транзакцию, чтобы не сохранять частичные данные
                     await db.rollback()
                     return {"error": f"Ошибка при обработке записи {name}: {e}"}
 
