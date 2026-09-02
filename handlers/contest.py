@@ -1,3 +1,4 @@
+# handlers/contest.py — ИСПРАВЛЕННАЯ ВЕРСИЯ (settings.ADMIN_IDS)
 import asyncio
 import logging
 from aiogram import Router, types, F
@@ -10,8 +11,9 @@ from database.models import User
 router = Router()
 logger = logging.getLogger(__name__)
 
+# ========== ИСПРАВЛЕННАЯ ФУНКЦИЯ ==========
 def is_admin(user_id: int) -> bool:
-    return user_id in settings.admin_ids
+    return user_id in settings.ADMIN_IDS   # <--- исправлено
 
 @router.message(Command("contest"))
 async def start_contest(message: types.Message):
