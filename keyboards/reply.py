@@ -1,8 +1,10 @@
+# keyboards/reply.py — ПОЛНАЯ ВЕРСИЯ
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 def main_menu_keyboard():
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
+        [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
         [KeyboardButton(text="🚨 Бензин заканчивается!")],
         [KeyboardButton(text="🔔 Мои уведомления"), KeyboardButton(text="💎 PRO")],
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="⭐ Оставить отзыв")],
@@ -11,7 +13,6 @@ def main_menu_keyboard():
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
 def fuel_choice_keyboard():
-    """Клавиатура выбора вида топлива (все виды)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="⛽ АИ-92"), KeyboardButton(text="⛽ АИ-95")],
@@ -21,3 +22,12 @@ def fuel_choice_keyboard():
         ],
         resize_keyboard=True
     )
+
+def welcome_back_keyboard():
+    buttons = [
+        [KeyboardButton(text="⛽ Найти заправку")],
+        [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
+        [KeyboardButton(text="🚨 Бензин заканчивается!")],
+        [KeyboardButton(text="👤 Профиль")],
+    ]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
