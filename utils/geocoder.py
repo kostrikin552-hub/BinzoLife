@@ -9,13 +9,14 @@ logger = logging.getLogger(__name__)
 
 YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
 NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&zoom=18&addressdetails=1"
-NOMINATIM_HEADERS = {"User-Agent": "BinzoLifeBot/1.0"}
+NOMINATIM_HEADERS = {
+    "User-Agent": "BinzoLifeBot/1.0 (https://t.me/BinzoLife_bot; support@binzolife.ru)"
+}
 
 _last_reverse_request_time = 0
 _REVERSE_LOCK = asyncio.Lock()
 
 async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
-    """Прямое геокодирование: адрес → координаты (только Яндекс)"""
     api_key = settings.YANDEX_GEOCODER_API_KEY
     if not api_key:
         logger.warning("Yandex Geocoder API key не настроен")
@@ -42,22 +43,17 @@ async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
         return None
 
 async def reverse_geocode(lat: float, lon: float) -> Optional[str]:
-    """
-    Обратное геокодирование: координаты → адрес.
-    Сначала Яндекс (если есть ключ), потом Nominatim.
-    С ограничением частоты запросов (минимум 0.5 сек между вызовами).
-    """
     if lat == 0.0 and lon == 0.0:
         return None
 
     global _last_reverse_request_time
     async with _REVERSE_LOCK:
         now = time.time()
-        if now - _last_reverse_request_time < 0.5:
-            await asyncio.sleep(0.5 - (now - _last_reverse_request_time))
+        if now - _last_reverse_request_time < 1.1:  # Nominatim требует не менее 1 сек
+            await asyncio.sleep(1.1 - (now - _last_reverse_request_time))
         _last_reverse_request_time = time.time()
 
-    # 1. Яндекс (если есть ключ)
+    # Яндекс (если есть ключ)
     if settings.YANDEX_GEOCODER_API_KEY:
         try:
             yandex_url = f"https://geocode-maps.yandex.ru/1.x/?apikey={settings.YANDEX_GEOCODER_API_KEY}&geocode={lon},{lat}&format=json"
@@ -73,7 +69,7 @@ async def reverse_geocode(lat: float, lon: float) -> Optional[str]:
         except Exception as e:
             logger.warning(f"Ошибка обратного геокодирования (Яндекс): {e}")
 
-    # 2. Nominatim (бесплатный)
+    # Nominatim (бесплатный, с правильным заголовком)
     try:
         url = NOMINATIM_REVERSE_URL.format(lat, lon)
         async with aiohttp.ClientSession() as session:
