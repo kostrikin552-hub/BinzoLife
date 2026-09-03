@@ -1,3 +1,4 @@
+# handlers/start.py — ПОЛНАЯ ВЕРСИЯ С ИНСТРУКЦИЕЙ
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
@@ -33,13 +34,11 @@ async def process_start(message: types.Message, state: FSMContext):
         user = await get_user(db, user_id)
         if not user:
             user = await create_user(db, user_id, username)
-            
-            # Обработка реферала с защитой от самореферала
+
             if ref_code:
                 referrer = await get_user_by_referral_code(db, ref_code)
                 if referrer and referrer.telegram_id != user.telegram_id:
                     await apply_referral(db, user.id, ref_code)
-                # Если self-referral – игнорируем
 
             city = await get_city_by_name(db, "Красноярск")
             if city:
@@ -50,16 +49,23 @@ async def process_start(message: types.Message, state: FSMContext):
                 "👋 Привет! Я **BinzoLife** — твой личный топливный ассистент.\n\n"
                 "⛽ Я покажу самые выгодные заправки в твоём городе с учётом расхода на дорогу.\n"
                 "💰 В среднем пользователи экономят **от 300 до 800 ₽ с каждого бака**!\n\n"
-                "🎁 **Бонус:** ты получаешь **3 дня PRO** бесплатно при первом поиске.\n\n"
+                "📍 <b>Как пользоваться геолокацией:</b>\n"
+                "• Нажми «📍 Отправить геолокацию» — я найду заправки рядом с тобой.\n"
+                "• Чтобы не отправлять её каждый раз, включи <b>трансляцию геопозиции</b> в Telegram:\n"
+                "  ➤ Нажми на скрепку 📎 → «Местоположение» → «Отправить мою текущую геопозицию»\n"
+                "  ➤ Внизу появится кнопка «Включить трансляцию» — нажми её и выбери время\n"
+                "  ➤ Теперь я всегда буду знать, где ты находишься!\n\n"
+                "🎁 <b>Бонус:</b> ты получаешь <b>3 дня PRO</b> бесплатно при первом поиске.\n\n"
                 "👇 Нажми кнопку, чтобы начать экономить:",
                 reply_markup=welcome_back_keyboard(),
-                parse_mode="Markdown"
+                parse_mode="HTML"
             )
             return
 
         if user.city_id:
             await message.answer(
                 "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
+                "📍 Если хочешь, чтобы я запомнил твою геопозицию, нажми «📍 Отправить геолокацию».\n"
                 "💰 Экономь до 500 ₽ за раз и не стой в очередях.",
                 reply_markup=welcome_back_keyboard()
             )
