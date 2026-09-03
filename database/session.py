@@ -4,10 +4,11 @@ from config import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,      # проверка соединения перед использованием
-    pool_recycle=1800,       # пересоздавать соединения через 30 минут (избегает "server closed connection")
-    pool_size=20,            # размер пула
-    max_overflow=10,         # дополнительные соединения при пиковой нагрузке
+    pool_pre_ping=True,      # Проверка соединения перед использованием
+    pool_recycle=300,        # Пересоздавать каждые 5 минут (Render закрывает через 300 сек)
+    pool_size=20,
+    max_overflow=10,
+    pool_timeout=30,
 )
 
 AsyncSessionLocal = async_sessionmaker(
