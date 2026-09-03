@@ -1,3 +1,4 @@
+import html
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -23,7 +24,6 @@ async def start_review(message: types.Message, state: FSMContext):
             await message.answer("Сначала выполните /start")
             return
 
-        # Проверка: не оставлял ли пользователь отзыв за последние 24 часа
         last_review = await db.execute(
             select(Review).where(
                 Review.user_id == user.id,
@@ -73,13 +73,16 @@ async def process_comment(message: types.Message, state: FSMContext):
     if comment and len(comment) > 500:
         await message.answer("Комментарий не должен превышать 500 символов. Попробуйте снова.")
         return
+    # Экранируем HTML
+    if comment:
+        comment = html.escape(comment)
     await state.update_data(comment=comment)
     await save_review(message, state, message.from_user.id)
 
 async def save_review(message: types.Message, state: FSMContext, telegram_id: int):
     data = await state.get_data()
     rating = data.get("rating")
-    comment = data.get("comment")
+    comment = data.get("comment")  # уже экранирован
     if not rating:
         await message.answer("Что-то пошло не так. Попробуйте снова.")
         await state.clear()
