@@ -4,7 +4,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from database.session import AsyncSessionLocal
-from database.crud import get_user, create_user, get_city_by_name, apply_referral, activate_trial
+from database.crud import get_user, create_user, get_city_by_name, apply_referral, get_user_by_referral_code
 from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popular_cities_keyboard, main_menu_keyboard
 
 router = Router()
@@ -13,7 +13,6 @@ CHANNEL_LINK = "https://t.me/BinzoLife_News"
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
-    # Убрана обязательная подписка — сразу переходим к приветствию
     await process_start(message, state)
 
 async def process_start(message: types.Message, state: FSMContext):
@@ -34,8 +33,14 @@ async def process_start(message: types.Message, state: FSMContext):
         user = await get_user(db, user_id)
         if not user:
             user = await create_user(db, user_id, username)
+            
+            # Обработка реферала с защитой от самореферала
             if ref_code:
-                await apply_referral(db, user.id, ref_code)
+                referrer = await get_user_by_referral_code(db, ref_code)
+                if referrer and referrer.telegram_id != user.telegram_id:
+                    await apply_referral(db, user.id, ref_code)
+                # Если self-referral – игнорируем
+
             city = await get_city_by_name(db, "Красноярск")
             if city:
                 user.city_id = city.id
