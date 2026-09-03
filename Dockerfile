@@ -1,13 +1,14 @@
 FROM python:3.11-slim
 
-# Установка системных зависимостей и шрифтов (убирает квадраты Tofu)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Создаём непривилегированного пользователя
+RUN useradd -m -u 1000 appuser && \
+    apt-get update && apt-get install -y --no-install-recommends \
     gcc \
-    libpq-dev \
-    fonts-dejavu-core \
-    fonts-liberation \
-    fontconfig \
-    && fc-cache -fv \
+    libffi-dev \
+    libxml2-dev \
+    libxslt-dev \
+    libjpeg-dev \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -15,6 +16,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY --chown=appuser:appuser . .
 
-CMD ["python", "-m", "main"]
+USER appuser
+
+EXPOSE 8000
+CMD ["python", "-m", "bot.main"]
