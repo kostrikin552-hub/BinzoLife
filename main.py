@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ВЕРСИЯ С ИСПРАВЛЕННЫМ HTTP-СЕРВЕРОМ
+# main.py — ПОЛНАЯ ВЕРСИЯ С ИСПРАВЛЕНИЯМИ
 import os
 import asyncio
 import logging
@@ -59,16 +59,15 @@ async def cron_subscriptions_handler(request):
     return web.Response(text="Subscriptions disabled", status=200)
 
 async def start_http_server():
-    """Запускает HTTP-сервер на 0.0.0.0:PORT."""
-    port = int(os.environ.get("PORT", "10000"))   # Render использует PORT
-    host = "0.0.0.0"                               # Обязательно 0.0.0.0
+    port = int(os.environ.get("PORT", "10000"))
+    host = "0.0.0.0"
     logger.info(f"🚀 Запуск HTTP-сервера на {host}:{port}")
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
     app.router.add_get("/healthz", health_check_handler)
     app.router.add_get("/cron/alerts", cron_alerts_handler)
-    app.router.add_get("/cron/subscriptions", cron_subscription_handler)
+    app.router.add_get("/cron/subscriptions", cron_subscriptions_handler)  # <-- ИСПРАВЛЕНО
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
@@ -83,6 +82,7 @@ async def init_database():
     logger.info("Проверка структуры БД...")
     async with AsyncSessionLocal() as db:
         try:
+            # Разбиваем CREATE TABLE и CREATE INDEX на два отдельных execute
             await db.execute(text("""
                 CREATE TABLE IF NOT EXISTS station_current_fuel (
                     station_id BIGINT NOT NULL,
@@ -94,11 +94,14 @@ async def init_database():
                     source VARCHAR(32) NOT NULL DEFAULT 'manual',
                     confidence NUMERIC(5, 2) NOT NULL DEFAULT 0.8,
                     PRIMARY KEY (station_id, fuel_type)
-                );
+                )
+            """))
+            await db.execute(text("""
                 CREATE INDEX IF NOT EXISTS idx_fuel_avail_lookup 
-                ON station_current_fuel (station_id, fuel_type, availability);
+                ON station_current_fuel (station_id, fuel_type, availability)
             """))
 
+            # Добавление колонок в users
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -125,6 +128,7 @@ async def init_database():
                 END $$;
             """))
 
+            # Добавление колонок в fuel_prices (если таблица существует)
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
