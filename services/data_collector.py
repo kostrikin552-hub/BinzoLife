@@ -1,4 +1,4 @@
-# services/data_collector.py — исправленная версия (защита от None)
+# services/data_collector.py — ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import asyncio
 import logging
 from typing import Optional, Dict, Any
@@ -92,7 +92,6 @@ class DataCollectorService:
 
 
 async def data_collector_worker():
-    """Фоновый воркер сбора данных о наличии топлива и очередях (раз в 15 мин)."""
     logger.info("[DataCollector] Сервис запущен.")
     await asyncio.sleep(15)
     while True:
@@ -108,30 +107,25 @@ async def data_collector_worker():
                 cities = res.mappings().all()
 
             for city in cities:
-                # --- ЗАЩИТА ОТ None ---
                 lat = city.get("latitude")
                 lon = city.get("longitude")
                 if lat is None or lon is None:
-                    logger.warning(f"[DataCollector] Город {city.get('name')} имеет координаты None, пропускаем.")
                     continue
                 try:
                     lat = float(lat)
                     lon = float(lon)
                 except (TypeError, ValueError) as e:
-                    logger.warning(f"[DataCollector] Ошибка преобразования координат города {city.get('name')}: {e}")
+                    logger.warning(f"[DataCollector] Ошибка преобразования координат: {e}")
                     continue
-
-                # Проверка, что координаты не нулевые (часто означают не заданные)
                 if abs(lat) < 0.0001 and abs(lon) < 0.0001:
-                    logger.warning(f"[DataCollector] Город {city.get('name')} имеет нулевые координаты, пропускаем.")
                     continue
 
                 data = await DataCollectorService.fetch_city_data(lat - 0.35, lat + 0.35, lon - 0.35, lon + 0.35)
                 if data:
                     await DataCollectorService.save_to_db(data)
-                await asyncio.sleep(2)  # Плавная нагрузка
+                await asyncio.sleep(2)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error(f"[DataCollector] Ошибка итерации: {e}")
-        await asyncio.sleep(900)  # 15 минут
+        await asyncio.sleep(900)
