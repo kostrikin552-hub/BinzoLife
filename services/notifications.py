@@ -1,4 +1,4 @@
-# services/notifications.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+# services/notifications.py — ПОЛНАЯ ВЕРСИЯ (все изменения)
 import asyncio
 import logging
 from datetime import datetime
@@ -9,6 +9,10 @@ from sqlalchemy import text
 from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
+
+# =====================================================================
+# 1. БЕЗОПАСНАЯ РАССЫЛКА С ЗАЩИТОЙ ОТ 429
+# =====================================================================
 
 async def safe_broadcast(bot: Bot, user_ids: List[int], text: str, parse_mode: str = "HTML") -> dict:
     """
@@ -38,6 +42,10 @@ async def safe_broadcast(bot: Bot, user_ids: List[int], text: str, parse_mode: s
             await asyncio.sleep(1.05)
     return {"success": success, "blocked": blocked}
 
+# =====================================================================
+# 2. ОТПРАВКА УВЕДОМЛЕНИЙ ОДНОМУ ПОЛЬЗОВАТЕЛЮ
+# =====================================================================
+
 async def send_user_notification(
     bot: Bot,
     telegram_id: int,
@@ -57,6 +65,10 @@ async def send_user_notification(
     except Exception as e:
         logger.debug(f"[Notifications] Не удалось отправить сообщение {telegram_id}: {e}")
         return False
+
+# =====================================================================
+# 3. КЛАСС-СЕРВИС ДЛЯ ОТПРАВКИ ТИПОВЫХ УВЕДОМЛЕНИЙ
+# =====================================================================
 
 class NotificationService:
     @staticmethod
@@ -83,7 +95,12 @@ class NotificationService:
         )
         await send_user_notification(bot, user_id, msg)
 
+# =====================================================================
+# 4. ПРОВЕРКА АЛЕРТОВ ЦЕН (ОТКЛЮЧЕНА В MAIN.PY, НО ОСТАВЛЕНА ДЛЯ СОВМЕСТИМОСТИ)
+# =====================================================================
+
 async def process_price_drop_alerts(bot: Bot):
+    """Проверка изменения цен (отключена в main.py, но код сохранён)."""
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -125,8 +142,13 @@ async def process_price_drop_alerts(bot: Bot):
     except Exception as e:
         logger.warning(f"[PriceAlerts] Предупреждение при проверке цен: {e}")
 
+# =====================================================================
+# 5. ФОНОВЫЙ ВОРКЕР (ОТКЛЮЧЕН, НО ОСТАВЛЕН ДЛЯ СОВМЕСТИМОСТИ)
+# =====================================================================
+
 async def price_alert_worker(bot: Bot):
-    logger.info("[PriceAlertWorker] Сервис мониторинга цен запущен.")
+    """Фоновый воркер мониторинга цен (отключён в main.py)."""
+    logger.info("[PriceAlertWorker] Сервис мониторинга цен запущен (но отключён в main.py).")
     await asyncio.sleep(60)
     while True:
         try:
@@ -138,5 +160,6 @@ async def price_alert_worker(bot: Bot):
             logger.error(f"[PriceAlertWorker] Необработанное исключение: {e}")
         await asyncio.sleep(1800)
 
+# Алиасы для совместимости
 send_price_alerts = process_price_drop_alerts
 price_alerts_worker = price_alert_worker
