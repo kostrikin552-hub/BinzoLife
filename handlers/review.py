@@ -1,20 +1,26 @@
+# handlers/review.py — ПОЛНАЯ ВЕРСИЯ
 import html
+import logging
+from datetime import datetime, timedelta, timezone
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from datetime import datetime, timedelta, timezone
+
 from database.session import AsyncSessionLocal
-from database.crud import get_user, create_review, get_avg_rating
+from database.crud import get_user, create_review, get_avg_rating, commit_or_rollback
 from database.models import Review
 from keyboards.reply import main_menu_keyboard
 from sqlalchemy import select
 
 router = Router()
+logger = logging.getLogger(__name__)
+
 
 class ReviewStates(StatesGroup):
     waiting_rating = State()
     waiting_comment = State()
+
 
 @router.message(F.text == "⭐ Оставить отзыв")
 async def start_review(message: types.Message, state: FSMContext):
@@ -24,6 +30,7 @@ async def start_review(message: types.Message, state: FSMContext):
             await message.answer("Сначала выполните /start")
             return
 
+        # Проверка: не оставлял ли пользователь отзыв за последние 24 часа
         last_review = await db.execute(
             select(Review).where(
                 Review.user_id == user.id,
@@ -48,6 +55,7 @@ async def start_review(message: types.Message, state: FSMContext):
         reply_markup=kb
     )
 
+
 @router.callback_query(lambda c: c.data.startswith("rate_"))
 async def process_rating(callback: types.CallbackQuery, state: FSMContext):
     rating = int(callback.data.split("_")[1])
@@ -61,28 +69,36 @@ async def process_rating(callback: types.CallbackQuery, state: FSMContext):
     )
     await callback.answer()
 
+
 @router.callback_query(F.data == "skip_comment")
 async def skip_comment(callback: types.CallbackQuery, state: FSMContext):
     await state.update_data(comment=None)
     await save_review(callback.message, state, callback.from_user.id)
     await callback.answer()
 
+
 @router.message(ReviewStates.waiting_comment, F.text)
 async def process_comment(message: types.Message, state: FSMContext):
+    # Если нажата кнопка меню — отменяем
+    if message.text in ["◀️ Назад", "/start", "/help", "📍 Найти заправку", "👤 Профиль", "⛽ Найти заправку"]:
+        await state.clear()
+        await message.answer("Оставление отзыва отменено.")
+        return
+
     comment = message.text.strip()
     if comment and len(comment) > 500:
         await message.answer("Комментарий не должен превышать 500 символов. Попробуйте снова.")
         return
-    # Экранируем HTML
     if comment:
         comment = html.escape(comment)
     await state.update_data(comment=comment)
     await save_review(message, state, message.from_user.id)
 
+
 async def save_review(message: types.Message, state: FSMContext, telegram_id: int):
     data = await state.get_data()
     rating = data.get("rating")
-    comment = data.get("comment")  # уже экранирован
+    comment = data.get("comment")
     if not rating:
         await message.answer("Что-то пошло не так. Попробуйте снова.")
         await state.clear()
@@ -97,7 +113,7 @@ async def save_review(message: types.Message, state: FSMContext, telegram_id: in
 
         await create_review(db, user.id, rating, comment)
         user.reputation += 2
-        await db.commit()
+        await commit_or_rollback(db)
 
         avg = await get_avg_rating(db)
         await message.answer(
@@ -109,6 +125,7 @@ async def save_review(message: types.Message, state: FSMContext, telegram_id: in
             reply_markup=main_menu_keyboard()
         )
     await state.clear()
+
 
 @router.callback_query(F.data == "cancel_review")
 async def cancel_review(callback: types.CallbackQuery, state: FSMContext):
