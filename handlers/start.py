@@ -1,82 +1,154 @@
-# handlers/start.py — ПОЛНАЯ ВЕРСИЯ С ИНСТРУКЦИЕЙ
+# handlers/start.py — ПОЛНАЯ ВЕРСИЯ (все изменения)
+import html
+import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 from database.session import AsyncSessionLocal
-from database.crud import get_user, create_user, get_city_by_name, apply_referral, get_user_by_referral_code
+from database.crud import (
+    get_user, create_user, get_city_by_name, apply_referral,
+    get_user_by_referral_code, get_user_by_id, set_user_timezone,
+    find_nearest_city, save_user_location
+)
+from database.models import FuelType
 from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popular_cities_keyboard, main_menu_keyboard
+from handlers.find import perform_search
+from handlers.payments import show_pro_info
 
 router = Router()
+logger = logging.getLogger(__name__)
 
-CHANNEL_LINK = "https://t.me/BinzoLife_News"
 
 @router.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext):
     await process_start(message, state)
 
+
+@router.message(F.location)
+async def process_instant_onboarding_geo(message: types.Message, state: FSMContext):
+    """Автоопределение города по GPS и переход к поиску."""
+    lat = message.location.latitude
+    lon = message.location.longitude
+    user_id = message.from_user.id
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, user_id)
+        if not user:
+            user = await create_user(db, user_id, message.from_user.username, message.from_user.first_name)
+
+        # Сохраняем координаты
+        await save_user_location(db, user.id, lat, lon)
+        await set_user_timezone(db, user.id, lat, lon)
+
+        # Автоопределение ближайшего города из базы
+        nearest_city = await find_nearest_city(db, lat, lon)
+        if nearest_city:
+            user.city_id = nearest_city.id
+            await db.commit()
+            await message.answer(
+                f"📍 Определили ваш регион: <b>{html.escape(nearest_city.name)}</b>!\n"
+                f"Ищем заправки с минимальной ценой вокруг вас...",
+                parse_mode="HTML"
+            )
+            # Запускаем поиск с дефолтным топливом АИ-95 и сортировкой по рейтингу
+            await state.update_data(
+                city_id=nearest_city.id,
+                lat=lat,
+                lon=lon,
+                fuel_type=FuelType.AI_95,
+                sort_mode="rating"
+            )
+            await perform_search(message, state)
+            return
+        else:
+            # Fallback на ручной выбор города
+            await message.answer(
+                "❌ Не удалось определить ваш город автоматически.\n"
+                "Пожалуйста, выберите город из списка:",
+                reply_markup=city_choice_keyboard()
+            )
+
+
 async def process_start(message: types.Message, state: FSMContext):
     args = message.text.split()
     user_id = message.from_user.id
     username = message.from_user.username
+    first_name = message.from_user.first_name
 
     ref_code = None
     if len(args) > 1:
         if args[1].startswith("ref_"):
             ref_code = args[1][4:]
         elif args[1] == "pro":
-            from handlers.payments import show_pro_info
             await show_pro_info(message)
             return
 
     async with AsyncSessionLocal() as db:
         user = await get_user(db, user_id)
         if not user:
-            user = await create_user(db, user_id, username)
+            user = await create_user(db, user_id, username, first_name)
 
+            # Обработка реферала с защитой от самореферала
             if ref_code:
                 referrer = await get_user_by_referral_code(db, ref_code)
                 if referrer and referrer.telegram_id != user.telegram_id:
                     await apply_referral(db, user.id, ref_code)
+                # Если self-referral – игнорируем
 
+            # Устанавливаем дефолтный город (Красноярск) как fallback
             city = await get_city_by_name(db, "Красноярск")
             if city:
                 user.city_id = city.id
                 await db.commit()
 
+            # Персонализированное приветствие
+            user_name = html.escape(first_name or "водитель")
+            welcome_text = (
+                f"👋 Рады видеть вас, <b>{user_name}</b>!\n\n"
+                f"Я <b>BinzoLife</b> — ваш персональный топливный штурман. "
+                f"Я нахожу честные цены на стелах АЗС и считаю, где заправиться <b>действительно выгодно</b> "
+                f"с учётом расхода на дорогу.\n\n"
+                f"📊 <b>В среднем наши водители берегут:</b>\n"
+                f"• <code>250 – 480 ₽</code> с каждого полного бака\n"
+                f"• <code>до 3 500 ₽</code> семейного бюджета в месяц\n\n"
+                f"🎁 <b>Подарок на старт:</b> вам открыт <b>полный PRO-доступ на 3 дня</b> "
+                f"(радар очередей, графики и максимальный радиус)!\n\n"
+                f"👇 <i>Нажмите кнопку ниже, чтобы увидеть лучшую цену рядом за 2 секунды:</i>"
+            )
+            geo_kb = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="📍 Найти самый дешевый бензин рядом", request_location=True)],
+                    [KeyboardButton(text="🏙 Выбрать город вручную"), KeyboardButton(text="ℹ️ Как это работает")],
+                    [KeyboardButton(text="👤 Профиль")]
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=False
+            )
+            await message.answer(welcome_text, reply_markup=geo_kb, parse_mode="HTML")
+            return
+
+        if user.city_id:
+            # Возвращающийся пользователь
+            user_name = html.escape(first_name or "водитель")
             await message.answer(
-                "👋 Привет! Я **BinzoLife** — твой личный топливный ассистент.\n\n"
-                "⛽ Я покажу самые выгодные заправки в твоём городе с учётом расхода на дорогу.\n"
-                "💰 В среднем пользователи экономят **от 300 до 800 ₽ с каждого бака**!\n\n"
-                "📍 <b>Как пользоваться геолокацией:</b>\n"
-                "• Нажми «📍 Отправить геолокацию» — я найду заправки рядом с тобой.\n"
-                "• Чтобы не отправлять её каждый раз, включи <b>трансляцию геопозиции</b> в Telegram:\n"
-                "  ➤ Нажми на скрепку 📎 → «Местоположение» → «Отправить мою текущую геопозицию»\n"
-                "  ➤ Внизу появится кнопка «Включить трансляцию» — нажми её и выбери время\n"
-                "  ➤ Теперь я всегда буду знать, где ты находишься!\n\n"
-                "🎁 <b>Бонус:</b> ты получаешь <b>3 дня PRO</b> бесплатно при первом поиске.\n\n"
-                "👇 Нажми кнопку, чтобы начать экономить:",
+                f"⛽ <b>{user_name}</b>, с возвращением! Где ищем заправку сегодня?\n\n"
+                f"💰 Экономь до 500 ₽ за раз и не стой в очередях.\n"
+                f"📍 Если хочешь, чтобы я запомнил твою геопозицию, нажми «📍 Отправить геолокацию».",
                 reply_markup=welcome_back_keyboard(),
                 parse_mode="HTML"
             )
             return
 
-        if user.city_id:
-            await message.answer(
-                "⛽ С возвращением! Где ищем заправку сегодня?\n\n"
-                "📍 Если хочешь, чтобы я запомнил твою геопозицию, нажми «📍 Отправить геолокацию».\n"
-                "💰 Экономь до 500 ₽ за раз и не стой в очередях.",
-                reply_markup=welcome_back_keyboard()
-            )
-            return
-
+        # Если нет города — запрашиваем
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
             "Сэкономь до 500 ₽ на одной заправке и забудь про очереди.\n\n"
             "📍 Для начала выбери свой город:",
             reply_markup=city_choice_keyboard()
         )
+
 
 # ---------- Обработчики выбора города ----------
 @router.callback_query(F.data == "city_list")
@@ -86,6 +158,7 @@ async def city_list(callback: types.CallbackQuery):
         "📍 Выбери свой город из списка:",
         reply_markup=popular_cities_keyboard()
     )
+
 
 @router.callback_query(lambda c: c.data.startswith("city_select_"))
 async def city_select(callback: types.CallbackQuery):
@@ -114,6 +187,7 @@ async def city_select(callback: types.CallbackQuery):
         reply_markup=welcome_back_keyboard()
     )
 
+
 @router.callback_query(F.data == "search_now")
 async def search_now(callback: types.CallbackQuery):
     await callback.answer()
@@ -123,3 +197,28 @@ async def search_now(callback: types.CallbackQuery):
         "Нажми /start, чтобы выбрать город.",
         reply_markup=main_menu_keyboard()
     )
+
+
+@router.message(F.text == "🏙 Выбрать город вручную")
+async def manual_city_choice(message: types.Message):
+    await message.answer(
+        "📍 Выберите город из списка:",
+        reply_markup=city_choice_keyboard()
+    )
+
+
+@router.message(F.text == "ℹ️ Как это работает")
+async def how_it_works(message: types.Message):
+    text = (
+        "📖 <b>Как BinzoLife сэкономит тебе время и деньги:</b>\n\n"
+        "1️⃣ <b>Найди АЗС за 10 секунд</b>\n"
+        "Нажми «📍 Найти самый дешевый бензин рядом» или «⛽ Найти заправку» — я покажу лучшие варианты.\n\n"
+        "2️⃣ <b>Бензин на нуле?</b>\n"
+        "Нажми «🚨 Бензин заканчивается!» — я найду ближайшую АЗС с топливом за 10 секунд.\n\n"
+        "3️⃣ <b>Помогай другим водителям</b>\n"
+        "Сообщай актуальные цены через «✏️ Сообщить цену» — получай репутацию и бонусные дни PRO.\n\n"
+        "4️⃣ <b>Не упускай выгоду</b>\n"
+        "С PRO ты будешь получать уведомления о снижении цен и появлении топлива на любимых АЗС.\n\n"
+        "💡 Все данные обновляются в реальном времени и имеют временную метку — я честен с тобой."
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=welcome_back_keyboard())
