@@ -1,11 +1,16 @@
+# handlers/menu.py — ПОЛНАЯ ВЕРСИЯ
 from aiogram import Router, types, F
+from aiogram.fsm.context import FSMContext
 from keyboards.reply import main_menu_keyboard
 
 router = Router()
 
+
 @router.message(F.text == "◀️ Назад")
-async def back_to_menu(message: types.Message):
+async def back_to_menu(message: types.Message, state: FSMContext):
+    await state.clear()
     await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+
 
 @router.message(F.text == "ℹ️ Помощь")
 async def help_cmd(message: types.Message):
@@ -24,8 +29,10 @@ async def help_cmd(message: types.Message):
     )
     await message.answer(text, reply_markup=main_menu_keyboard(), parse_mode="HTML")
 
+
 @router.callback_query(F.data == "back_to_menu")
-async def back_to_menu_callback(callback: types.CallbackQuery):
+async def back_to_menu_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
+    await state.clear()
     await callback.message.delete()
     await callback.message.answer("Главное меню:", reply_markup=main_menu_keyboard())
