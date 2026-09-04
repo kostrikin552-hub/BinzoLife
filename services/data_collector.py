@@ -1,4 +1,4 @@
-# services/data_collector.py — ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+# services/data_collector.py — ПОЛНАЯ ВЕРСИЯ (с защитой от None)
 import asyncio
 import logging
 from typing import Optional, Dict, Any
@@ -92,6 +92,7 @@ class DataCollectorService:
 
 
 async def data_collector_worker():
+    """Фоновый воркер сбора данных о наличии топлива и очередях (раз в 15 мин)."""
     logger.info("[DataCollector] Сервис запущен.")
     await asyncio.sleep(15)
     while True:
@@ -128,4 +129,4 @@ async def data_collector_worker():
             break
         except Exception as e:
             logger.error(f"[DataCollector] Ошибка итерации: {e}")
-        await asyncio.sleep(900)
+        await asyncio.sleep(900)  # 15 минут
