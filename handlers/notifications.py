@@ -1,10 +1,14 @@
+# handlers/notifications.py — ПОЛНАЯ ВЕРСИЯ
+import logging
 from aiogram import Router, types, F
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, create_notification, get_active_notifications_for_user,
-    get_notification_by_id, deactivate_notification
+    get_notification_by_id, deactivate_notification, commit_or_rollback
 )
 from database.models import FuelType
 from keyboards.reply import main_menu_keyboard
@@ -12,9 +16,11 @@ from keyboards.inline import notification_action_keyboard, pro_purchase_keyboard
 from services.subscription import check_pro
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 class NotifStates(StatesGroup):
     waiting_price = State()
+
 
 @router.message(F.text == "🔔 Мои уведомления")
 async def list_notifications(message: types.Message):
@@ -25,6 +31,7 @@ async def list_notifications(message: types.Message):
             reply_markup=pro_purchase_keyboard()
         )
         return
+
     async with AsyncSessionLocal() as db:
         user = await get_user(db, message.from_user.id)
         if not user:
@@ -45,6 +52,7 @@ async def list_notifications(message: types.Message):
                 await message.answer(text, reply_markup=notification_action_keyboard(n.id))
         await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
 
+
 @router.callback_query(lambda c: c.data.startswith("unsub_"))
 async def unsubscribe_notification(callback: types.CallbackQuery):
     notif_id = int(callback.data.split("_")[1])
@@ -57,5 +65,9 @@ async def unsubscribe_notification(callback: types.CallbackQuery):
             await callback.answer("⛔ Вы не можете отписаться от этого уведомления.")
             return
         await deactivate_notification(db, notif_id)
-    await callback.answer("Уведомление отключено")
-    await callback.message.edit_text("✅ Вы отписались от уведомления.")
+        await commit_or_rollback(db)
+    try:
+        await callback.message.edit_text("🔕 Уведомление отключено. Вы больше не будете получать оповещения по этой АЗС.")
+    except TelegramBadRequest:
+        pass
+    await callback.answer("Отписка выполнена")
