@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ВЕРСИЯ (без дублирующего парсера)
+# main.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import os
 import asyncio
 import logging
@@ -82,6 +82,7 @@ async def init_database():
     logger.info("Проверка структуры БД...")
     async with AsyncSessionLocal() as db:
         try:
+            # Создание таблицы station_current_fuel
             await db.execute(text("""
                 CREATE TABLE IF NOT EXISTS station_current_fuel (
                     station_id BIGINT NOT NULL,
@@ -100,6 +101,7 @@ async def init_database():
                 ON station_current_fuel (station_id, fuel_type, availability)
             """))
 
+            # Добавление колонок в users (все уже есть, но проверяем на случай)
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -142,6 +144,7 @@ async def init_database():
                 END $$;
             """))
 
+            # Добавление колонок в fuel_prices
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -162,6 +165,17 @@ async def init_database():
                                        WHERE table_name='fuel_prices' AND column_name='updated_by_user_id') THEN
                             ALTER TABLE fuel_prices ADD COLUMN updated_by_user_id BIGINT;
                         END IF;
+                    END IF;
+                END $$;
+            """))
+
+            # Добавление колонки slug в cities
+            await db.execute(text("""
+                DO $$ 
+                BEGIN 
+                    IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
+                                   WHERE table_name='cities' AND column_name='slug') THEN
+                        ALTER TABLE cities ADD COLUMN slug VARCHAR(50) UNIQUE;
                     END IF;
                 END $$;
             """))
