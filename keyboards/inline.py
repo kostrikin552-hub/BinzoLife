@@ -1,4 +1,4 @@
-# keyboards/inline.py — ПОЛНАЯ ВЕРСИЯ
+# keyboards/inline.py — ПОЛНАЯ ВЕРСИЯ (с пагинацией городов)
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 
@@ -27,6 +27,32 @@ def popular_cities_keyboard(with_back: bool = False) -> InlineKeyboardMarkup:
     if with_back:
         buttons.append([InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+def get_cities_keyboard(cities: list, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
+    """Инлайн-клавиатура выбора города с постраничной навигацией."""
+    total_pages = max(1, (len(cities) + per_page - 1) // per_page)
+    page = max(0, min(page, total_pages - 1))
+    start = page * per_page
+    end = start + per_page
+    batch = cities[start:end]
+    keyboard = []
+    row = []
+    for c in batch:
+        row.append(InlineKeyboardButton(text=c.name, callback_data=f"select_city_{c.id}"))
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton(text="⬅️ Назад", callback_data=f"cities_page_{page - 1}"))
+    nav_buttons.append(InlineKeyboardButton(text=f"Стр. {page + 1}/{total_pages}", callback_data="noop"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"cities_page_{page + 1}"))
+    keyboard.append(nav_buttons)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
 
 def get_fuel_selection_keyboard(selected_fuel: str = "АИ-95") -> InlineKeyboardMarkup:
@@ -97,6 +123,6 @@ def sort_choice_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
-def welcome_back_keyboard() -> ReplyKeyboardMarkup:
-    # Уже есть в reply.py
+def welcome_back_keyboard() -> InlineKeyboardMarkup:
+    # Уже используется из reply.py, но оставим для совместимости
     pass
