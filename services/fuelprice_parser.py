@@ -1,15 +1,14 @@
-# services/fuelprice_parser.py — ПОЛНАЯ ВЕРСИЯ (добавлен fuel_price_parser_worker)
+# services/fuelprice_parser.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import asyncio
 import json
 import logging
 import random
-from datetime import datetime, timezone
 from typing import List, Dict, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 
-from database.models import City, FuelPrice, Station, User
+from database.models import City, User
 from database.crud import update_city_prices_by_brand
 from utils.task_locks import task_locker
 
@@ -23,10 +22,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0"
 ]
 
-
 class HybridFuelParser:
-    """Двухконтурный гибридный парсер (FuelPrices + 2ГИС)"""
-
     def __init__(self):
         self.timeout = aiohttp.ClientTimeout(total=18)
 
@@ -39,11 +35,7 @@ class HybridFuelParser:
             "Cache-Control": "no-cache",
         }
 
-    # ============================================================
-    # 1. СБОР С FUELPRICES.RU
-    # ============================================================
     async def fetch_fuelprices_city(self, city_slug: str) -> List[Dict]:
-        """Сбор средних цен топлива с портала fuelprices.ru"""
         url = f"https://fuelprices.ru/{city_slug}"
         results = []
         for attempt in range(1, 4):
@@ -61,7 +53,6 @@ class HybridFuelParser:
                                     if len(cols) >= 2:
                                         fuel_raw = cols[0].upper()
                                         price_str = cols[1].replace(",", ".").replace("₽", "").strip()
-                                        
                                         fuel_type = None
                                         brand = None
                                         if "92" in fuel_raw:
@@ -78,7 +69,6 @@ class HybridFuelParser:
                                             fuel_type = "ГАЗ"
                                         if not fuel_type:
                                             continue
-                                        
                                         if "Лукойл" in fuel_raw:
                                             brand = "Лукойл"
                                         elif "Газпромнефть" in fuel_raw or "ГПН" in fuel_raw:
@@ -87,7 +77,6 @@ class HybridFuelParser:
                                             brand = "Татнефть"
                                         elif "Роснефть" in fuel_raw:
                                             brand = "Роснефть"
-                                        
                                         try:
                                             price_val = float(price_str)
                                             if 30.0 <= price_val <= 150.0:
@@ -110,11 +99,7 @@ class HybridFuelParser:
                 await asyncio.sleep(attempt * 2.0)
         return results
 
-    # ============================================================
-    # 2. СБОР С 2ГИС (Резервный и уточняющий контур)
-    # ============================================================
     async def fetch_2gis_stations_prices(self, city_query: str, fuel_type: str = "АИ-95") -> List[Dict]:
-        """Сбор данных о наличии и ценах с каталога 2ГИС через JSON-LD"""
         encoded_query = aiohttp.helpers.quote(f"АЗС {fuel_type}", safe="")
         url = f"https://2gis.ru/{city_query}/search/{encoded_query}"
         results = []
@@ -152,11 +137,7 @@ class HybridFuelParser:
             logger.debug(f"2ГИС поиск для {city_query} завершился с предупреждением: {e}")
         return results
 
-    # ============================================================
-    # 3. ЕЖЕДНЕВНЫЙ ФОНОВЫЙ ЦИКЛ ПО ВСЕМ ГОРОДАМ
-    # ============================================================
     async def run_daily_parse_all_cities(self, session_factory):
-        """Интеллектуальный обход 65+ городов с приоритизацией и задержкой"""
         if not task_locker.acquire("daily_fuel_parser", timeout_seconds=3600):
             logger.warning("Парсер всех городов уже выполняется, повторный вызов отклонён.")
             return
@@ -180,8 +161,16 @@ class HybridFuelParser:
             total_updated = 0
             for idx, city in enumerate(sorted_cities, start=1):
                 try:
-                    logger.info(f"[{idx}/{len(sorted_cities)}] Обновление цен для г. {city.name} (slug: {city.slug})...")
-                    prices = await self.fetch_fuelprices_city(city.slug)
+                    # Получаем слаг города с fallback
+                    slug = city.slug
+                    if not slug and city.city_slug:
+                        slug = city.city_slug.slug
+                    if not slug:
+                        logger.warning(f"Для города {city.name} нет слага, пропускаем")
+                        continue
+
+                    logger.info(f"[{idx}/{len(sorted_cities)}] Обновление цен для г. {city.name} (slug: {slug})...")
+                    prices = await self.fetch_fuelprices_city(slug)
                     if prices:
                         async with session_factory() as session:
                             for item in prices:
@@ -197,7 +186,7 @@ class HybridFuelParser:
                             total_updated += len(prices)
                     else:
                         logger.info(f"FuelPrices пуст для {city.name}, пробуем 2ГИС...")
-                        await self.fetch_2gis_stations_prices(city.slug)
+                        await self.fetch_2gis_stations_prices(city.slug or city.name)
 
                     await asyncio.sleep(random.uniform(3.0, 4.5))
                 except Exception as err:
@@ -209,19 +198,12 @@ class HybridFuelParser:
         finally:
             task_locker.release("daily_fuel_parser")
 
-
-# Глобальный экземпляр парсера
 fuel_parser = HybridFuelParser()
 
-
-# ============================================================
-# 4. ФОНОВЫЙ ВОРКЕР ДЛЯ MAIN.PY
-# ============================================================
 async def fuel_price_parser_worker():
-    """Фоновый воркер для периодического парсинга цен (раз в 24 часа)."""
     from database.session import AsyncSessionLocal
     logger.info("[FuelPriceParser] Воркер запущен")
-    await asyncio.sleep(45)  # даём время на старт
+    await asyncio.sleep(45)
     while True:
         try:
             await fuel_parser.run_daily_parse_all_cities(AsyncSessionLocal)
