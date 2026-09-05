@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с исправленным блоком актуализации городов)
 import os
 import asyncio
 import logging
@@ -29,6 +29,8 @@ from services.radar import friday_radar_worker
 from services.fuelprice_parser import fuel_price_parser_worker
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
+
+# ИМПОРТ ФУНКЦИЙ ДЛЯ ГОРОДОВ (ОБЯЗАТЕЛЬНО)
 from database.crud import seed_all_russian_cities, update_city_slugs_from_seed
 
 logging.basicConfig(
@@ -251,11 +253,15 @@ async def main():
             updated_slugs = await update_city_slugs_from_seed(session)
             if updated_slugs > 0:
                 logger.info(f"✅ Обновлено слагов у существующих городов: {updated_slugs}")
+            else:
+                logger.info("ℹ️ Не найдено городов без слагов для обновления.")
 
             # Шаг Б: Добавляем все недостающие города из списка 65+ (без дублей)
             added_cities = await seed_all_russian_cities(session)
             if added_cities > 0:
                 logger.info(f"✅ Добавлено новых городов России: {added_cities}")
+            else:
+                logger.info("ℹ️ Новых городов для добавления не найдено.")
 
             # Проверяем итоговый статус
             total_cities = await session.execute(text("SELECT COUNT(*) FROM cities WHERE is_active = true"))
