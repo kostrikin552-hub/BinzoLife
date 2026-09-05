@@ -28,7 +28,7 @@ class HybridFuelParser:
     """Двухконтурный гибридный парсер (FuelPrices + 2ГИС) с защитой от изменения верстки"""
 
     def __init__(self):
-        self.timeout = aiohttp.ClientTimeout(total=20)
+        self.timeout = aiohttp.ClientTimeout(total=30)  # увеличен таймаут
 
     def _get_headers(self, referer: str = "https://yandex.ru/") -> Dict[str, str]:
         return {
@@ -64,19 +64,23 @@ class HybridFuelParser:
         return None
 
     # ============================================================
-    # 1. МНОГОУРОВНЕВЫЙ СБОР С FUELPRICES.RU
+    # 1. МНОГОУРОВНЕВЫЙ СБОР С FUELPRICES.RU (С ПОВТОРНЫМИ ПОПЫТКАМИ)
     # ============================================================
     async def fetch_fuelprices_city(self, city_slug: str) -> List[Dict]:
-        """Сбор средних цен топлива с сайта fuelprices.ru с несколькими эвристиками"""
+        """Сбор средних цен топлива с сайта fuelprices.ru с несколькими эвристиками и повторными попытками"""
         url = f"https://fuelprices.ru/{city_slug}"
         results = []
-        for attempt in range(1, 4):
+        for attempt in range(1, 6):  # увеличено до 6 попыток
             try:
                 async with aiohttp.ClientSession(timeout=self.timeout) as session:
                     async with session.get(url, headers=self._get_headers("https://fuelprices.ru/")) as response:
                         if response.status == 404:
                             logger.warning(f"FuelPrices вернул 404 для города со слагом '{city_slug}'. Проверьте правильность слага.")
                             return []
+                        if response.status in (502, 503, 504, 522):
+                            logger.warning(f"FuelPrices {city_slug}: HTTP статус {response.status} (попытка {attempt}), повтор через {attempt*3} сек.")
+                            await asyncio.sleep(attempt * 3)
+                            continue
                         if response.status != 200:
                             logger.warning(f"FuelPrices {city_slug}: HTTP статус {response.status} (попытка {attempt})")
                             await asyncio.sleep(attempt * 2)
@@ -163,11 +167,14 @@ class HybridFuelParser:
                             final_list = list(unique_results.values())
                             logger.info(f"✅ FuelPrices: успешно извлечено {len(final_list)} цен для '{city_slug}'")
                             return final_list
+            except asyncio.TimeoutError:
+                logger.warning(f"FuelPrices {city_slug}: таймаут (попытка {attempt}), повтор через {attempt*3} сек.")
+                await asyncio.sleep(attempt * 3)
             except Exception as e:
                 logger.debug(f"FuelPrices attempt {attempt} для '{city_slug}' завершилась ошибкой: {e}")
                 await asyncio.sleep(attempt * 2.0)
 
-        logger.warning(f"⚠️ FuelPrices не вернул цен для '{city_slug}' после 3 попыток.")
+        logger.warning(f"⚠️ FuelPrices не вернул цен для '{city_slug}' после 5 попыток.")
         return []
 
     # ============================================================
