@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с исправленным блоком актуализации городов)
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с исправленным сидингом)
 import os
 import asyncio
 import logging
@@ -246,23 +246,11 @@ async def main():
     dp.include_router(common.router)
     dp.include_router(admin_router)
 
-    # 4. Актуализация базы городов и слагов (ВЫПОЛНЯЕТСЯ ВСЕГДА ПРИ СТАРТЕ)
+    # 4. Актуализация базы городов и слагов (ВЫПОЛНЯЕТСЯ ВСЕГДА)
     async with AsyncSessionLocal() as session:
         try:
-            # Шаг А: Проставляем слаги всем уже существующим городам
-            updated_slugs = await update_city_slugs_from_seed(session)
-            if updated_slugs > 0:
-                logger.info(f"✅ Обновлено слагов у существующих городов: {updated_slugs}")
-            else:
-                logger.info("ℹ️ Не найдено городов без слагов для обновления.")
-
-            # Шаг Б: Добавляем все недостающие города из списка 65+ (без дублей)
-            added_cities = await seed_all_russian_cities(session)
-            if added_cities > 0:
-                logger.info(f"✅ Добавлено новых городов России: {added_cities}")
-            else:
-                logger.info("ℹ️ Новых городов для добавления не найдено.")
-
+            from database.crud import seed_all_russian_cities
+            added = await seed_all_russian_cities(session)
             # Проверяем итоговый статус
             total_cities = await session.execute(text("SELECT COUNT(*) FROM cities WHERE is_active = true"))
             with_slugs = await session.execute(text("SELECT COUNT(*) FROM cities WHERE slug IS NOT NULL AND slug != ''"))
