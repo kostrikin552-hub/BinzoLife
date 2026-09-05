@@ -1,4 +1,4 @@
-# main.py — исправленный импорт admin
+# main.py — ПОЛНАЯ ВЕРСИЯ (без дублирующего парсера)
 import os
 import asyncio
 import logging
@@ -21,16 +21,14 @@ from handlers import (
     start, find, emergency, menu, payments, profile, review,
     contest, notifications, common, inline,
 )
-# admin импортируем отдельно
 from handlers.admin import router as admin_router
 
 # Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.fuelprice_parser import fuel_price_parser_worker, fuel_parser
+from services.fuelprice_parser import fuel_price_parser_worker
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
-from services.cities_seed import RUSSIA_CITIES
 from database.crud import seed_all_russian_cities
 
 logging.basicConfig(
@@ -175,20 +173,6 @@ async def init_database():
             logger.warning(f"Ошибка инициализации БД: {e}")
 
 
-# ======================== ФОНОВЫЙ ПЛАНИРОВЩИК ПАРСЕРА ========================
-async def scheduled_fuel_parser_worker(session_factory):
-    await asyncio.sleep(45)
-    while True:
-        try:
-            await fuel_parser.run_daily_parse_all_cities(session_factory)
-            await asyncio.sleep(24 * 3600)
-        except asyncio.CancelledError:
-            break
-        except Exception as err:
-            logger.error(f"Сбой в воркере парсера: {err}")
-            await asyncio.sleep(300)
-
-
 # ======================== СУПЕРВИЗОР ========================
 async def run_supervised(coro, task_name: str):
     while True:
@@ -218,7 +202,7 @@ async def main():
     dp.callback_query.middleware(ThrottlingMiddleware(limit=0.3))
     dp.message.middleware(ClearStateOnMenuMiddleware())
 
-    # 3. Роутеры (все кроме admin — admin подключаем отдельно)
+    # 3. Роутеры
     dp.include_router(start.router)
     dp.include_router(find.router)
     dp.include_router(emergency.router)
@@ -230,18 +214,9 @@ async def main():
     dp.include_router(notifications.router)
     dp.include_router(inline.router)
     dp.include_router(common.router)
-    dp.include_router(admin_router)   # admin добавлен отдельно
+    dp.include_router(admin_router)
 
-    # 4. Фоновые задачи
-    background_tasks: List[asyncio.Task] = [
-        asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
-        asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
-        asyncio.create_task(run_supervised(fuel_price_parser_worker, "FuelPriceParser")),
-        asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
-        asyncio.create_task(run_supervised(address_updater_worker, "AddressUpdater")),
-    ]
-
-    # 5. Сидинг городов и запуск фонового парсера
+    # 4. Сидинг городов
     async with AsyncSessionLocal() as session:
         existing = await session.execute(text("SELECT COUNT(*) FROM cities"))
         if existing.scalar() == 0:
@@ -250,8 +225,14 @@ async def main():
         else:
             logger.info("Города уже есть в БД, пропускаем сидинг.")
 
-    parser_task = asyncio.create_task(scheduled_fuel_parser_worker(AsyncSessionLocal))
-    background_tasks.append(parser_task)
+    # 5. Фоновые задачи
+    background_tasks: List[asyncio.Task] = [
+        asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
+        asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
+        asyncio.create_task(run_supervised(fuel_price_parser_worker, "FuelPriceParser")),
+        asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
+        asyncio.create_task(run_supervised(address_updater_worker, "AddressUpdater")),
+    ]
 
     # 6. Polling с ретраями
     await bot.delete_webhook(drop_pending_updates=True)
