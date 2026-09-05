@@ -1,11 +1,10 @@
-# services/fuelprice_parser.py — ИСПРАВЛЕННАЯ ВЕРСИЯ (домен fuelprice.ru)
+# services/fuelprice_parser.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import asyncio
 import re
 import logging
 import random
 from typing import List, Dict
 import aiohttp
-from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -24,12 +23,13 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0"
 ]
 
+# ИСПРАВЛЕННЫЙ СЛОВАРЬ — теперь значения соответствуют FuelType enum
 FUEL_TYPE_MAP = {
-    "АИ-92": "АИ-92",
-    "АИ-95": "АИ-95",
-    "АИ-98": "АИ-98",
-    "АИ-100": "АИ-100",
-    "ДТ": "ДТ",
+    "АИ-92": "AI-92",
+    "АИ-95": "AI-95",
+    "АИ-98": "AI-98",
+    "АИ-100": "AI-100",
+    "ДТ": "DT",
 }
 
 class HybridFuelParser:
@@ -65,7 +65,7 @@ class HybridFuelParser:
 
                         html = await response.text()
 
-                        # 1. Основной рабочий способ: парсинг JS-массива меток (как в city_importer.py)
+                        # 1. Основной рабочий способ: парсинг JS-массива меток
                         js_pattern = re.compile(
                             r'\[([\d.]+),\s*([\d.]+),\s*\'([^\']+)\',\s*\'([^\']*)\',\s*\'([^\']*)\''
                         )
@@ -84,7 +84,7 @@ class HybridFuelParser:
                                             price = float(p_match.group(1).replace(",", "."))
                                             if 35.0 <= price <= 150.0:
                                                 results.append({
-                                                    "fuel_type": fuel_val,
+                                                    "fuel_type": fuel_val,  # теперь "AI-95"
                                                     "price": price,
                                                     "brand": brand_name,
                                                     "source": "fuelprice.ru"
@@ -169,7 +169,7 @@ class HybridFuelParser:
                         total_updated += updated_count
                         logger.info(f"Обновлено {updated_count} станций в г. {city.name}")
 
-                # Пауза 3.5 секунды между городами, чтобы fuelprice.ru не ругался
+                # Пауза 3.5 секунды между городами
                 await asyncio.sleep(random.uniform(3.0, 4.0))
 
             logger.info(f"🎉 Сбор цен завершён! Обновлено котировок: {total_updated}")
