@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
 import os
 import asyncio
 import logging
@@ -29,7 +29,7 @@ from services.radar import friday_radar_worker
 from services.fuelprice_parser import fuel_price_parser_worker
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
-from database.crud import seed_all_russian_cities
+from database.crud import seed_all_russian_cities, update_city_slugs_from_seed
 
 logging.basicConfig(
     level=logging.INFO,
@@ -101,7 +101,7 @@ async def init_database():
                 ON station_current_fuel (station_id, fuel_type, availability)
             """))
 
-            # Добавление колонок в users (все уже есть, но проверяем на случай)
+            # Добавление колонок в users
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -169,7 +169,7 @@ async def init_database():
                 END $$;
             """))
 
-            # Добавление колонки slug в cities
+            # Добавление колонки slug в cities (если её нет)
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -185,6 +185,20 @@ async def init_database():
         except Exception as e:
             await db.rollback()
             logger.warning(f"Ошибка инициализации БД: {e}")
+
+
+# ======================== ФОНОВЫЙ ПЛАНИРОВЩИК ПАРСЕРА ========================
+async def scheduled_fuel_parser_worker(session_factory):
+    await asyncio.sleep(45)
+    while True:
+        try:
+            await fuel_parser.run_daily_parse_all_cities(session_factory)
+            await asyncio.sleep(24 * 3600)
+        except asyncio.CancelledError:
+            break
+        except Exception as err:
+            logger.error(f"Сбой в воркере парсера: {err}")
+            await asyncio.sleep(300)
 
 
 # ======================== СУПЕРВИЗОР ========================
@@ -230,14 +244,25 @@ async def main():
     dp.include_router(common.router)
     dp.include_router(admin_router)
 
-    # 4. Сидинг городов
+    # 4. Актуализация базы городов и слагов (ВЫПОЛНЯЕТСЯ ВСЕГДА ПРИ СТАРТЕ)
     async with AsyncSessionLocal() as session:
-        existing = await session.execute(text("SELECT COUNT(*) FROM cities"))
-        if existing.scalar() == 0:
-            added = await seed_all_russian_cities(session)
-            logger.info(f"Импортировано {added} новых городов России!")
-        else:
-            logger.info("Города уже есть в БД, пропускаем сидинг.")
+        try:
+            # Шаг А: Проставляем слаги всем уже существующим городам
+            updated_slugs = await update_city_slugs_from_seed(session)
+            if updated_slugs > 0:
+                logger.info(f"✅ Обновлено слагов у существующих городов: {updated_slugs}")
+
+            # Шаг Б: Добавляем все недостающие города из списка 65+ (без дублей)
+            added_cities = await seed_all_russian_cities(session)
+            if added_cities > 0:
+                logger.info(f"✅ Добавлено новых городов России: {added_cities}")
+
+            # Проверяем итоговый статус
+            total_cities = await session.execute(text("SELECT COUNT(*) FROM cities WHERE is_active = true"))
+            with_slugs = await session.execute(text("SELECT COUNT(*) FROM cities WHERE slug IS NOT NULL AND slug != ''"))
+            logger.info(f"📊 Статус городов в БД: Всего активных = {total_cities.scalar()}, Со слагами = {with_slugs.scalar()}")
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении списка городов: {e}", exc_info=True)
 
     # 5. Фоновые задачи
     background_tasks: List[asyncio.Task] = [
