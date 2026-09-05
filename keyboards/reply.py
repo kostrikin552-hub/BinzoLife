@@ -34,14 +34,3 @@ def fuel_choice_keyboard():
         ],
         resize_keyboard=True
     )
-
-
-def sort_choice_keyboard():
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text="🔥 По рейтингу")],
-            [KeyboardButton(text="💰 По минимальной цене")],
-            [KeyboardButton(text="◀️ Назад")],
-        ],
-        resize_keyboard=True
-    )
