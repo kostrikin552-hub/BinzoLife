@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import aiohttp
 from bs4 import BeautifulSoup
 from sqlalchemy import select
+from sqlalchemy.orm import joinedload  # <-- ДОБАВЛЕНО
 
 from database.models import City, User
 from database.crud import update_city_prices_by_brand
@@ -23,6 +24,8 @@ USER_AGENTS = [
 ]
 
 class HybridFuelParser:
+    """Двухконтурный гибридный парсер (FuelPrices + 2ГИС)"""
+
     def __init__(self):
         self.timeout = aiohttp.ClientTimeout(total=18)
 
@@ -35,7 +38,11 @@ class HybridFuelParser:
             "Cache-Control": "no-cache",
         }
 
+    # ============================================================
+    # 1. СБОР С FUELPRICES.RU
+    # ============================================================
     async def fetch_fuelprices_city(self, city_slug: str) -> List[Dict]:
+        """Сбор средних цен топлива с портала fuelprices.ru"""
         url = f"https://fuelprices.ru/{city_slug}"
         results = []
         for attempt in range(1, 4):
@@ -99,7 +106,11 @@ class HybridFuelParser:
                 await asyncio.sleep(attempt * 2.0)
         return results
 
+    # ============================================================
+    # 2. СБОР С 2ГИС (Резервный контур)
+    # ============================================================
     async def fetch_2gis_stations_prices(self, city_query: str, fuel_type: str = "АИ-95") -> List[Dict]:
+        """Сбор данных о наличии и ценах с каталога 2ГИС через JSON-LD"""
         encoded_query = aiohttp.helpers.quote(f"АЗС {fuel_type}", safe="")
         url = f"https://2gis.ru/{city_query}/search/{encoded_query}"
         results = []
@@ -137,20 +148,29 @@ class HybridFuelParser:
             logger.debug(f"2ГИС поиск для {city_query} завершился с предупреждением: {e}")
         return results
 
+    # ============================================================
+    # 3. ЕЖЕДНЕВНЫЙ ФОНОВЫЙ ЦИКЛ ПО ВСЕМ ГОРОДАМ (ИСПРАВЛЕН)
+    # ============================================================
     async def run_daily_parse_all_cities(self, session_factory):
+        """Интеллектуальный обход 65+ городов с приоритизацией и задержкой"""
         if not task_locker.acquire("daily_fuel_parser", timeout_seconds=3600):
             logger.warning("Парсер всех городов уже выполняется, повторный вызов отклонён.")
             return
         try:
             logger.info("🚀 Запуск планового парсинга цен по городам РФ...")
+            
+            # --- ЖАДНАЯ ЗАГРУЗКА city_slug (исправление DetachedInstanceError) ---
             async with session_factory() as session:
                 active_city_ids = set(
                     (await session.execute(
                         select(User.city_id).where(User.city_id.isnot(None)).distinct()
                     )).scalars().all()
                 )
+                
                 all_cities = (await session.execute(
-                    select(City).where(City.is_active.is_(True))
+                    select(City)
+                    .options(joinedload(City.city_slug))  # <-- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ
+                    .where(City.is_active.is_(True))
                 )).scalars().all()
 
                 sorted_cities = sorted(
@@ -161,7 +181,7 @@ class HybridFuelParser:
             total_updated = 0
             for idx, city in enumerate(sorted_cities, start=1):
                 try:
-                    # Получаем слаг города с fallback
+                    # Теперь city_slug уже загружен, даже если сессия закрыта
                     slug = city.slug
                     if not slug and city.city_slug:
                         slug = city.city_slug.slug
@@ -198,8 +218,12 @@ class HybridFuelParser:
         finally:
             task_locker.release("daily_fuel_parser")
 
+# Глобальный экземпляр парсера
 fuel_parser = HybridFuelParser()
 
+# ============================================================
+# 4. ФОНОВЫЙ ВОРКЕР ДЛЯ MAIN.PY
+# ============================================================
 async def fuel_price_parser_worker():
     from database.session import AsyncSessionLocal
     logger.info("[FuelPriceParser] Воркер запущен")
