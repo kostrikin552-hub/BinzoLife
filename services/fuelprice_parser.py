@@ -1,4 +1,4 @@
-# services/fuelprice_parser.py
+# services/fuelprice_parser.py — ПОЛНАЯ ВЕРСИЯ (добавлен fuel_price_parser_worker)
 import asyncio
 import json
 import logging
@@ -62,7 +62,6 @@ class HybridFuelParser:
                                         fuel_raw = cols[0].upper()
                                         price_str = cols[1].replace(",", ".").replace("₽", "").strip()
                                         
-                                        # Определяем тип топлива
                                         fuel_type = None
                                         brand = None
                                         if "92" in fuel_raw:
@@ -80,7 +79,6 @@ class HybridFuelParser:
                                         if not fuel_type:
                                             continue
                                         
-                                        # Попробуем извлечь бренд (если есть в названии колонки)
                                         if "Лукойл" in fuel_raw:
                                             brand = "Лукойл"
                                         elif "Газпромнефть" in fuel_raw or "ГПН" in fuel_raw:
@@ -89,7 +87,6 @@ class HybridFuelParser:
                                             brand = "Татнефть"
                                         elif "Роснефть" in fuel_raw:
                                             brand = "Роснефть"
-                                        # и т.д.
                                         
                                         try:
                                             price_val = float(price_str)
@@ -98,7 +95,7 @@ class HybridFuelParser:
                                                     "fuel_type": fuel_type,
                                                     "price": price_val,
                                                     "source": "fuelprices.ru",
-                                                    "brand": brand  # может быть None
+                                                    "brand": brand
                                                 })
                                         except ValueError:
                                             continue
@@ -200,8 +197,6 @@ class HybridFuelParser:
                             total_updated += len(prices)
                     else:
                         logger.info(f"FuelPrices пуст для {city.name}, пробуем 2ГИС...")
-                        # Здесь можно обработать данные 2ГИС, например, создать/обновить станции
-                        # или просто пропустить. Пока оставляем как заглушку.
                         await self.fetch_2gis_stations_prices(city.slug)
 
                     await asyncio.sleep(random.uniform(3.0, 4.5))
@@ -217,3 +212,23 @@ class HybridFuelParser:
 
 # Глобальный экземпляр парсера
 fuel_parser = HybridFuelParser()
+
+
+# ============================================================
+# 4. ФОНОВЫЙ ВОРКЕР ДЛЯ MAIN.PY
+# ============================================================
+async def fuel_price_parser_worker():
+    """Фоновый воркер для периодического парсинга цен (раз в 24 часа)."""
+    from database.session import AsyncSessionLocal
+    logger.info("[FuelPriceParser] Воркер запущен")
+    await asyncio.sleep(45)  # даём время на старт
+    while True:
+        try:
+            await fuel_parser.run_daily_parse_all_cities(AsyncSessionLocal)
+            await asyncio.sleep(24 * 3600)
+        except asyncio.CancelledError:
+            logger.info("[FuelPriceParser] Воркер остановлен")
+            break
+        except Exception as e:
+            logger.error(f"[FuelPriceParser] Ошибка в цикле парсинга: {e}", exc_info=True)
+            await asyncio.sleep(300)
