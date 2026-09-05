@@ -1,21 +1,22 @@
-# handlers/start.py — ПОЛНАЯ ВЕРСИЯ (все изменения)
+# handlers/start.py — ИСПРАВЛЕННАЯ ВЕРСИЯ (импорты клавиатур)
 import html
 import logging
 from aiogram import Router, types, F
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, create_user, get_city_by_name, apply_referral,
     get_user_by_referral_code, get_user_by_id, set_user_timezone,
-    find_nearest_city, save_user_location
+    find_nearest_city, save_user_location, commit_or_rollback
 )
 from database.models import FuelType
-from keyboards.inline import welcome_back_keyboard, city_choice_keyboard, popular_cities_keyboard, main_menu_keyboard
 from handlers.find import perform_search
 from handlers.payments import show_pro_info
+from keyboards.reply import main_menu_keyboard, welcome_back_keyboard
+from keyboards.inline import city_choice_keyboard, popular_cities_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -38,21 +39,18 @@ async def process_instant_onboarding_geo(message: types.Message, state: FSMConte
         if not user:
             user = await create_user(db, user_id, message.from_user.username, message.from_user.first_name)
 
-        # Сохраняем координаты
         await save_user_location(db, user.id, lat, lon)
         await set_user_timezone(db, user.id, lat, lon)
 
-        # Автоопределение ближайшего города из базы
         nearest_city = await find_nearest_city(db, lat, lon)
         if nearest_city:
             user.city_id = nearest_city.id
-            await db.commit()
+            await commit_or_rollback(db)
             await message.answer(
                 f"📍 Определили ваш регион: <b>{html.escape(nearest_city.name)}</b>!\n"
                 f"Ищем заправки с минимальной ценой вокруг вас...",
                 parse_mode="HTML"
             )
-            # Запускаем поиск с дефолтным топливом АИ-95 и сортировкой по рейтингу
             await state.update_data(
                 city_id=nearest_city.id,
                 lat=lat,
@@ -63,7 +61,6 @@ async def process_instant_onboarding_geo(message: types.Message, state: FSMConte
             await perform_search(message, state)
             return
         else:
-            # Fallback на ручной выбор города
             await message.answer(
                 "❌ Не удалось определить ваш город автоматически.\n"
                 "Пожалуйста, выберите город из списка:",
@@ -90,20 +87,16 @@ async def process_start(message: types.Message, state: FSMContext):
         if not user:
             user = await create_user(db, user_id, username, first_name)
 
-            # Обработка реферала с защитой от самореферала
             if ref_code:
                 referrer = await get_user_by_referral_code(db, ref_code)
                 if referrer and referrer.telegram_id != user.telegram_id:
                     await apply_referral(db, user.id, ref_code)
-                # Если self-referral – игнорируем
 
-            # Устанавливаем дефолтный город (Красноярск) как fallback
             city = await get_city_by_name(db, "Красноярск")
             if city:
                 user.city_id = city.id
-                await db.commit()
+                await commit_or_rollback(db)
 
-            # Персонализированное приветствие
             user_name = html.escape(first_name or "водитель")
             welcome_text = (
                 f"👋 Рады видеть вас, <b>{user_name}</b>!\n\n"
@@ -130,7 +123,6 @@ async def process_start(message: types.Message, state: FSMContext):
             return
 
         if user.city_id:
-            # Возвращающийся пользователь
             user_name = html.escape(first_name or "водитель")
             await message.answer(
                 f"⛽ <b>{user_name}</b>, с возвращением! Где ищем заправку сегодня?\n\n"
@@ -141,7 +133,6 @@ async def process_start(message: types.Message, state: FSMContext):
             )
             return
 
-        # Если нет города — запрашиваем
         await message.answer(
             "⛽ Привет! Я — BinzoLife.\n\n"
             "Сэкономь до 500 ₽ на одной заправке и забудь про очереди.\n\n"
@@ -178,7 +169,7 @@ async def city_select(callback: types.CallbackQuery):
         user = await get_user(db, callback.from_user.id)
         if user:
             user.city_id = city.id
-            await db.commit()
+            await commit_or_rollback(db)
 
     await callback.message.delete()
     await callback.message.answer(
