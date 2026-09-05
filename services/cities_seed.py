@@ -1,4 +1,4 @@
-# services/cities_seed.py
+# services/cities_seed.py — ПОЛНЫЙ СПИСОК 65+ ГОРОДОВ
 from typing import List, Dict
 
 RUSSIA_CITIES: List[Dict] = [
@@ -74,4 +74,18 @@ RUSSIA_CITIES: List[Dict] = [
     {"name": "Кострома", "slug": "kostroma", "lat": 57.7679, "lon": 40.9269, "tz": 3},
     {"name": "Новороссийск", "slug": "novorossiysk", "lat": 44.7239, "lon": 37.7689, "tz": 3},
     {"name": "Йошкар-Ола", "slug": "yoshkar-ola", "lat": 56.6344, "lon": 47.8999, "tz": 3},
+    {"name": "Элиста", "slug": "elista", "lat": 46.3078, "lon": 44.2558, "tz": 3},
+    {"name": "Грозный", "slug": "grozny", "lat": 43.3180, "lon": 45.6980, "tz": 3},
+    {"name": "Нальчик", "slug": "nalchik", "lat": 43.4854, "lon": 43.6071, "tz": 3},
+    {"name": "Майкоп", "slug": "maykop", "lat": 44.6098, "lon": 40.1005, "tz": 3},
+    {"name": "Черкесск", "slug": "cherkessk", "lat": 44.2269, "lon": 42.0468, "tz": 3},
+    {"name": "Абакан", "slug": "abakan", "lat": 53.7200, "lon": 91.4400, "tz": 7},
+    {"name": "Горно-Алтайск", "slug": "gorno-altaysk", "lat": 51.9581, "lon": 85.9605, "tz": 7},
+    {"name": "Кызыл", "slug": "kyzyl", "lat": 51.7184, "lon": 94.4435, "tz": 7},
+    {"name": "Бийск", "slug": "biysk", "lat": 52.5300, "lon": 85.1700, "tz": 7},
+    {"name": "Рубцовск", "slug": "rubtsovsk", "lat": 51.5000, "lon": 81.2000, "tz": 7},
+    {"name": "Кисловодск", "slug": "kislovodsk", "lat": 43.9133, "lon": 42.7200, "tz": 3},
+    {"name": "Пятигорск", "slug": "pyatigorsk", "lat": 44.0500, "lon": 43.0500, "tz": 3},
+    {"name": "Ессентуки", "slug": "essentuki", "lat": 44.0500, "lon": 42.8500, "tz": 3},
+    {"name": "Минеральные Воды", "slug": "mineralnye-vody", "lat": 44.2000, "lon": 43.1333, "tz": 3},
 ]
