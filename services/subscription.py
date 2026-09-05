@@ -1,10 +1,10 @@
-# services/subscription.py — ПОЛНАЯ ВЕРСИЯ (все изменения из этапов 1–5)
+# services/subscription.py — ПОЛНАЯ ВЕРСИЯ (исправлена ошибка text)
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Union, Dict, Any
 from aiogram import Bot
-from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.exceptions import TelegramForbiddenError
 from sqlalchemy import text, select, and_
 from database.session import AsyncSessionLocal
 from database.models import User
@@ -12,11 +12,9 @@ from database.crud import commit_or_rollback, get_user_by_id, is_user_pro
 
 logger = logging.getLogger(__name__)
 
-
 # =====================================================================
 # 1. ФУНКЦИИ ФОРМАТИРОВАНИЯ
 # =====================================================================
-
 def format_pro_until(pro_until: Optional[Union[datetime, str]]) -> str:
     if not pro_until:
         return "❌ Не активна"
@@ -39,7 +37,6 @@ def format_pro_until(pro_until: Optional[Union[datetime, str]]) -> str:
     else:
         return f"до {date_str} (осталось {hours_left} ч.)"
 
-
 def get_pro_status_text(is_pro: bool, pro_until: Optional[datetime]) -> str:
     if is_pro and pro_until:
         dt_val = pro_until
@@ -49,26 +46,21 @@ def get_pro_status_text(is_pro: bool, pro_until: Optional[datetime]) -> str:
             return f"🌟 <b>PRO-аккаунт</b> ({format_pro_until(pro_until)})"
     return "Стандартный (Базовый доступ)"
 
-
 def format_subscription_info(user_data: Dict[str, Any]) -> str:
     is_pro = bool(user_data.get("is_pro", False))
     pro_until = user_data.get("pro_until")
     return get_pro_status_text(is_pro, pro_until)
 
-
 # =====================================================================
-# 2. ПРОВЕРКА СТАТУСА ПОДПИСКИ (С ТАЙМЗОНАМИ)
+# 2. ПРОВЕРКА СТАТУСА ПОДПИСКИ
 # =====================================================================
-
 async def is_user_pro_by_id(db, user_id: int) -> bool:
     user = await get_user_by_id(db, user_id)
     if not user:
         return False
     return await is_user_pro(db, user)
 
-
 async def check_pro(telegram_id: int) -> bool:
-    """Основная проверка для хендлеров (по telegram_id)."""
     async with AsyncSessionLocal() as db:
         from database.crud import get_user
         user = await get_user(db, telegram_id)
@@ -76,11 +68,9 @@ async def check_pro(telegram_id: int) -> bool:
             return False
         return await is_user_pro(db, user)
 
-
 # =====================================================================
 # 3. ФОНОВЫЙ ВОРКЕР: ПРОВЕРКА ИСТЕКАЮЩИХ PRO И ТРИАЛА
 # =====================================================================
-
 async def check_expiring_subscriptions(bot: Bot):
     try:
         async with AsyncSessionLocal() as db:
@@ -95,14 +85,11 @@ async def check_expiring_subscriptions(bot: Bot):
             exp_3d = (await db.execute(stmt_3d)).mappings().all()
             for u in exp_3d:
                 try:
-                    await bot.send_message(
-                        chat_id=u["telegram_id"],
-                        text=(
-                            "⏳ <b>Ваша PRO-подписка истекает через 3 дня!</b>\n\n"
-                            "Продлите подписку в меню /profile, чтобы не потерять доступ."
-                        ),
-                        parse_mode="HTML"
+                    msg = (
+                        "⏳ <b>Ваша PRO-подписка истекает через 3 дня!</b>\n\n"
+                        "Продлите подписку в меню /profile, чтобы не потерять доступ."
                     )
+                    await bot.send_message(u["telegram_id"], msg, parse_mode="HTML")
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
                     await db.execute(text("UPDATE users SET is_active = false WHERE telegram_id = :uid"), {"uid": u["telegram_id"]})
@@ -121,14 +108,11 @@ async def check_expiring_subscriptions(bot: Bot):
             exp_1d = (await db.execute(stmt_1d)).mappings().all()
             for u in exp_1d:
                 try:
-                    await bot.send_message(
-                        chat_id=u["telegram_id"],
-                        text=(
-                            "⚠️ <b>Внимание: PRO-подписка заканчивается завтра!</b>\n\n"
-                            "Продлите подписку в разделе /profile."
-                        ),
-                        parse_mode="HTML"
+                    msg = (
+                        "⚠️ <b>Внимание: PRO-подписка заканчивается завтра!</b>\n\n"
+                        "Продлите подписку в разделе /profile."
                     )
+                    await bot.send_message(u["telegram_id"], msg, parse_mode="HTML")
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
                     await db.execute(text("UPDATE users SET is_active = false WHERE telegram_id = :uid"), {"uid": u["telegram_id"]})
@@ -148,14 +132,11 @@ async def check_expiring_subscriptions(bot: Bot):
 
             for u in expired:
                 try:
-                    await bot.send_message(
-                        chat_id=u["telegram_id"],
-                        text=(
-                            "❌ <b>Срок действия вашей PRO-подписки завершён.</b>\n\n"
-                            "Возобновить доступ можно через команду /profile."
-                        ),
-                        parse_mode="HTML"
+                    msg = (
+                        "❌ <b>Срок действия вашей PRO-подписки завершён.</b>\n\n"
+                        "Возобновить доступ можно через команду /profile."
                     )
+                    await bot.send_message(u["telegram_id"], msg, parse_mode="HTML")
                     await asyncio.sleep(0.05)
                 except TelegramForbiddenError:
                     await db.execute(text("UPDATE users SET is_active = false WHERE telegram_id = :uid"), {"uid": u["telegram_id"]})
@@ -181,7 +162,7 @@ async def check_expiring_subscriptions(bot: Bot):
                 saved_rub = u.get("total_saved") or 350.0
                 first_name = u.get("first_name") or "Водитель"
                 try:
-                    text = (
+                    msg = (
                         f"⏳ <b>{first_name}, ваш 3-дневный тест PRO заканчивается завтра!</b>\n\n"
                         f"За время поездок с BinzoLife вы сохранили в кошельке: <b>~{saved_rub:.0f} ₽</b>.\n\n"
                         f"Чтобы не терять утренний радар цен и SOS-помощь, активируйте постоянный PRO "
@@ -189,11 +170,7 @@ async def check_expiring_subscriptions(bot: Bot):
                         f"⭐️ <b>149 ₽/мес</b> вместо <s>199 ₽</s> (всего 5 ₽ в день)!\n\n"
                         f"<i>Спеццена сгорит вместе с окончанием триала ровно через 24 часа.</i>"
                     )
-                    await bot.send_message(
-                        u["telegram_id"],
-                        text,
-                        parse_mode="HTML"
-                    )
+                    await bot.send_message(u["telegram_id"], msg, parse_mode="HTML")
                     await db.execute(
                         text("UPDATE users SET trial_alert_sent = true WHERE id = :uid"),
                         {"uid": u["id"]}
@@ -209,7 +186,6 @@ async def check_expiring_subscriptions(bot: Bot):
     except Exception as e:
         logger.error(f"[SubscriptionService] Ошибка в check_expiring_subscriptions: {e}")
 
-
 async def subscription_expiration_worker(bot: Bot):
     logger.info("[SubscriptionService] Воркер контроля подписок запущен.")
     await asyncio.sleep(30)
@@ -223,7 +199,5 @@ async def subscription_expiration_worker(bot: Bot):
             logger.error(f"[SubscriptionService] Необработанная ошибка воркера: {e}")
         await asyncio.sleep(43200)  # 12 часов
 
-
-# Алиасы
 subscription_worker = subscription_expiration_worker
 run_subscription_worker = subscription_expiration_worker
