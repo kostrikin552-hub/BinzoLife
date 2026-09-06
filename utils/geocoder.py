@@ -1,89 +1,74 @@
+# utils/geocoder.py
 import aiohttp
-import logging
-import time
 import asyncio
-from typing import Optional, Tuple
-from config import settings
+import logging
+from typing import Optional
+from database.crud import get_cached_address, cache_address
 
 logger = logging.getLogger(__name__)
+USER_AGENT = "BinzoLifeBot/2.0 (fuel_station_locator)"
 
-YANDEX_GEOCODER_URL = "https://geocode-maps.yandex.ru/1.x/?apikey={}&geocode={}&format=json"
-NOMINATIM_REVERSE_URL = "https://nominatim.openstreetmap.org/reverse?lat={}&lon={}&format=json&zoom=18&addressdetails=1"
-NOMINATIM_HEADERS = {
-    "User-Agent": "BinzoLifeBot/1.0 (https://t.me/BinzoLife_bot; support@binzolife.ru)"
-}
-
-_last_reverse_request_time = 0
-_REVERSE_LOCK = asyncio.Lock()
-
-async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
-    api_key = settings.YANDEX_GEOCODER_API_KEY
-    if not api_key:
-        logger.warning("Yandex Geocoder API key не настроен")
+async def reverse_geocode(lat: float, lon: float, session = None) -> Optional[str]:
+    """
+    Определяет точный человекочитаемый адрес по координатам (lat, lon).
+    Сначала проверяет локальный кэш БД, затем делает запрос к Nominatim.
+    """
+    if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
         return None
 
-    url = YANDEX_GEOCODER_URL.format(api_key, address.replace(" ", "+"))
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status != 200:
-                    logger.error(f"Геокодер вернул статус {resp.status}")
-                    return None
-                data = await resp.json()
-                geo_objects = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
-                if not geo_objects:
-                    return None
-                coords_str = geo_objects[0].get("GeoObject", {}).get("Point", {}).get("pos", "")
-                if not coords_str:
-                    return None
-                lon, lat = map(float, coords_str.split())
-                return lat, lon
-    except Exception as e:
-        logger.error(f"Ошибка геокодирования: {e}")
-        return None
-
-async def reverse_geocode(lat: float, lon: float) -> Optional[str]:
-    if lat == 0.0 and lon == 0.0:
-        return None
-
-    global _last_reverse_request_time
-    async with _REVERSE_LOCK:
-        now = time.time()
-        if now - _last_reverse_request_time < 1.1:  # Nominatim требует не менее 1 сек
-            await asyncio.sleep(1.1 - (now - _last_reverse_request_time))
-        _last_reverse_request_time = time.time()
-
-    # Яндекс (если есть ключ)
-    if settings.YANDEX_GEOCODER_API_KEY:
+    # 1. Проверяем кэш в БД, если передана сессия
+    if session:
         try:
-            yandex_url = f"https://geocode-maps.yandex.ru/1.x/?apikey={settings.YANDEX_GEOCODER_API_KEY}&geocode={lon},{lat}&format=json"
-            async with aiohttp.ClientSession() as session:
-                async with session.get(yandex_url, timeout=10) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        geo_objects = data.get("response", {}).get("GeoObjectCollection", {}).get("featureMember", [])
-                        if geo_objects:
-                            addr = geo_objects[0].get("GeoObject", {}).get("metaDataProperty", {}).get("GeocoderMetaData", {}).get("text", "")
-                            if addr:
-                                return addr
-        except Exception as e:
-            logger.warning(f"Ошибка обратного геокодирования (Яндекс): {e}")
+            cached = await get_cached_address(session, lat, lon)
+            if cached:
+                return cached
+        except Exception:
+            pass
 
-    # Nominatim (бесплатный, с правильным заголовком)
+    # 2. Обратный геокодинг через OpenStreetMap Nominatim
+    url = "https://nominatim.openstreetmap.org/reverse"
+    params = {
+        "lat": lat,
+        "lon": lon,
+        "format": "jsonv2",
+        "addressdetails": 1,
+        "accept-language": "ru"
+    }
+    headers = {
+        "User-Agent": USER_AGENT
+    }
+
     try:
-        url = NOMINATIM_REVERSE_URL.format(lat, lon)
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=NOMINATIM_HEADERS, timeout=10) as resp:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as http_client:
+            async with http_client.get(url, params=params, headers=headers) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    if "display_name" in data:
-                        address = data.get("display_name", "")
-                        parts = address.split(", ")
-                        if len(parts) > 3:
-                            short_addr = ", ".join(parts[:3])
-                            return short_addr
-                        return address
+                    addr = data.get("address", {})
+                    # Собираем красивый компактный адрес
+                    road = addr.get("road") or addr.get("street") or addr.get("pedestrian") or ""
+                    house = addr.get("house_number") or ""
+                    city = addr.get("city") or addr.get("town") or addr.get("village") or addr.get("county") or ""
+                    parts = []
+                    if city:
+                        parts.append(city)
+                    if road:
+                        parts.append(road)
+                    if house:
+                        parts.append(str(house))
+                    full_address = ", ".join(parts) if parts else data.get("display_name")
+                    if full_address:
+                        clean_addr = full_address.strip()
+                        # Сохраняем в кэш
+                        if session:
+                            try:
+                                await cache_address(session, lat, lon, clean_addr)
+                            except Exception:
+                                pass
+                        return clean_addr
+                elif resp.status == 429:
+                    logger.warning("Nominatim rate-limit (429), делаем паузу...")
+                    await asyncio.sleep(2)
     except Exception as e:
-        logger.warning(f"Ошибка обратного геокодирования (Nominatim): {e}")
-
+        logger.debug(f"Ошибка обратного геокодирования ({lat}, {lon}): {e}")
     return None
