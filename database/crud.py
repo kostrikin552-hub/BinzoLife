@@ -1819,3 +1819,101 @@ async def sync_dgis_city_stations(
 
     await commit_or_rollback(session)
     return stations_added, stations_updated
+# ========== СИНХРОНИЗАЦИЯ MULTIGO V2 ==========
+async def sync_multigo_v2_stations(
+    session: AsyncSession,
+    city_id: int,
+    city_name: str,
+    stations_data: List[Dict],
+    prices_data: Dict[str, Dict],
+) -> Tuple[int, int]:
+    """
+    Сохраняет станции и цены из MultiGo V2.
+    Возвращает (добавлено_станций, добавлено_цен).
+    """
+    now = datetime.now(timezone.utc)
+    stations_added = 0
+    prices_added = 0
+
+    # Индекс существующих станций по координатам (точность ~100м)
+    stmt = select(Station).where(Station.city_id == city_id, Station.is_active == True)
+    existing = (await session.execute(stmt)).scalars().all()
+    coord_index = {
+        (round(s.latitude, 3), round(s.longitude, 3)): s
+        for s in existing if s.latitude and s.longitude
+    }
+
+    for item in stations_data:
+        lat = item["latitude"]
+        lon = item["longitude"]
+        key = (round(lat, 3), round(lon, 3))
+
+        station = coord_index.get(key)
+        if not station:
+            # Создаём новую станцию
+            station = Station(
+                city_id=city_id,
+                name=item["name"][:200] if item["name"] else "АЗС",
+                brand=item["brand"][:100] if item["brand"] else "АЗС",
+                address=item["address"][:300] if item["address"] else "Адрес уточняется",
+                latitude=lat,
+                longitude=lon,
+                is_active=True,
+            )
+            session.add(station)
+            await session.flush()
+            coord_index[key] = station
+            stations_added += 1
+        else:
+            # Обновляем адрес, если он пустой или устаревший
+            if (not station.address or "уточн" in station.address.lower() or station.address == "") and item["address"]:
+                station.address = item["address"][:300]
+                await session.flush()
+
+    # Применяем коэффициенты брендов к ценам
+    from services.multigo_v2 import BRAND_PRICE_MODIFIERS
+
+    # Для каждой станции назначаем цены (если есть данные по региону)
+    for st in coord_index.values():
+        modifier = BRAND_PRICE_MODIFIERS.get(st.brand, 1.0)
+        for fuel_name, p_info in prices_data.items():
+            # Пропускаем нестандартные виды топлива, если они не в FuelType
+            fuel_type_enum = None
+            for ft in FuelType:
+                if ft.value == fuel_name:
+                    fuel_type_enum = ft
+                    break
+            if not fuel_type_enum:
+                continue
+
+            base_price = p_info["price"]
+            adjusted_price = round(base_price * modifier, 2)
+            if adjusted_price < 30 or adjusted_price > 150:
+                continue  # защита от выбросов
+
+            # Обновляем или вставляем цену
+            p_stmt = select(FuelPrice).where(
+                FuelPrice.station_id == st.id,
+                FuelPrice.fuel_type == fuel_type_enum,
+                FuelPrice.is_fresh == True,
+            )
+            existing_price = (await session.execute(p_stmt)).scalar_one_or_none()
+            if existing_price:
+                existing_price.price = adjusted_price
+                existing_price.source = SourceType.PARSER
+                existing_price.recorded_at = now
+            else:
+                new_price = FuelPrice(
+                    station_id=st.id,
+                    fuel_type=fuel_type_enum,
+                    price=adjusted_price,
+                    source=SourceType.PARSER,
+                    confidence=0.85,
+                    is_fresh=True,
+                    recorded_at=now,
+                )
+                session.add(new_price)
+                prices_added += 1
+
+    await commit_or_rollback(session)
+    return stations_added, prices_added
