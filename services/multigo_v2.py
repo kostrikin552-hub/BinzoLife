@@ -1,4 +1,4 @@
-# services/multigo_v2.py — адаптирован под PostgreSQL + SQLAlchemy
+# services/multigo_v2.py — финальная версия с исправлениями
 import asyncio
 import json
 import logging
@@ -14,38 +14,13 @@ from database.crud import commit_or_rollback
 
 logger = logging.getLogger(__name__)
 
-# Константы MultiGo V2 API
+# Константы MultiGo API
 NEAR_URL = "https://multigo.ru/api/9/near/list"
 PRICES_URL = "https://multigo.ru/api/9/avgprices"
 
-# Маппинг кодов топлива в названия (соответствуют FuelType)
-FUEL_CODES = {
-    "1": "СУГ",        # пропан-бутан
-    "3": "ДТ",         # дизельное топливо
-    "4": "ДТ+",        # дизель премиум
-    "8": "АИ-92",      # АИ-92
-    "9": "АИ-92+",     # АИ-92 улучшенный
-    "11": "АИ-95",     # АИ-95
-    "12": "АИ-95+",    # АИ-95 улучшенный (G-Drive / ЭКТО)
-    "14": "АИ-98",     # АИ-98
-    "16": "АИ-100",    # АИ-100 Racing
-    "17": "ДТ Зимний", # дизель зимний
-    "18": "КПГ",       # метан сжатый
-}
-
-# Коэффициенты для брендов (относительно средней цены региона)
-BRAND_MODIFIERS = {
-    "лукойл": 1.012,
-    "газпромнефть": 1.010,
-    "teboil": 1.008,
-    "роснефть": 1.000,
-    "татнефть": 0.995,
-    "башнефть": 0.990,
-}
-
-# Расширенный справочник координат (RU + EN алиасы)
+# Полный справочник координат (RU + EN + все проблемные города из лога)
 CITY_COORDINATES = {
-    # Из лога с предупреждениями:
+    # Проблемные города из лога
     "krasnodar": (45.0355, 38.9753),
     "краснодар": (45.0355, 38.9753),
     "tyumen": (57.1530, 65.5343),
@@ -76,7 +51,21 @@ CITY_COORDINATES = {
     "рязань": (54.6295, 39.7425),
     "penza": (53.1959, 45.0183),
     "пенза": (53.1959, 45.0183),
-    # Крупнейшие города РФ
+    "кызыл": (51.7184, 94.4435),
+    "kyzyl": (51.7184, 94.4435),
+    "бийск": (52.5300, 85.1700),
+    "biysk": (52.5300, 85.1700),
+    "рубцовск": (51.5000, 81.2000),
+    "rubtsovsk": (51.5000, 81.2000),
+    "кисловодск": (43.9133, 42.7200),
+    "kislovodsk": (43.9133, 42.7200),
+    "пятигорск": (44.0500, 43.0500),
+    "pyatigorsk": (44.0500, 43.0500),
+    "ессентуки": (44.0500, 42.8500),
+    "yessentuki": (44.0500, 42.8500),
+    "минеральные воды": (44.2000, 43.1333),
+    "mineralnye vody": (44.2000, 43.1333),
+    # Крупнейшие города
     "москва": (55.7558, 37.6173),
     "moscow": (55.7558, 37.6173),
     "санкт-петербург": (59.9343, 30.3351),
@@ -89,30 +78,58 @@ CITY_COORDINATES = {
     "novosibirsk": (55.0084, 82.9357),
     "красноярск": (56.0153, 92.8932),
     "krasnoyarsk": (56.0153, 92.8932),
-    "кызыл": (51.7184, 94.4435),
-    "бийск": (52.5300, 85.1700),
-    "рубцовск": (51.5000, 81.2000),
-    "кисловодск": (43.9133, 42.7200),
-    "пятигорск": (44.0500, 43.0500),
-    "ессентуки": (44.0500, 42.8500),
-    "минеральные воды": (44.2000, 43.1333),
 }
 
+# Маппинг кодов топлива
+FUEL_CODES = {
+    "1": "СУГ",
+    "3": "ДТ",
+    "4": "ДТ+",
+    "8": "АИ-92",
+    "9": "АИ-92+",
+    "11": "АИ-95",
+    "12": "АИ-95+",
+    "14": "АИ-98",
+    "16": "АИ-100",
+    "17": "ДТ Зимний",
+    "18": "КПГ",
+}
+
+# Брендовые модификаторы (расширенные)
+BRAND_MODIFIERS = {
+    "лукойл": 1.012,
+    "lukoil": 1.012,
+    "газпромнефть": 1.010,
+    "gazpromneft": 1.010,
+    "teboil": 1.008,
+    "тебойл": 1.008,
+    "роснефть": 1.000,
+    "rosneft": 1.000,
+    "татнефть": 0.995,
+    "tatneft": 0.995,
+    "башнефть": 0.990,
+    "bashneft": 0.990,
+    "нефтьмагистраль": 1.006,
+    "трасса": 1.005,
+    "irbis": 1.004,
+    "независимая": 0.985,
+}
+
+
 def normalize_city_name(raw_name: str) -> Optional[str]:
-    """Очищает мусорные строки вида '- цены на бензин АИ-92'"""
+    """Фильтрует мусорные строки вида '- цены на бензин АИ-92'"""
     if not raw_name:
         return None
     name = raw_name.strip()
     # Исключаем строки-заголовки
-    if any(bad in name.lower() for bad in ["цены", "бензин", "дизель", "аи-", "руб"]):
+    if any(bad in name.lower() for bad in ["цены", "бензин", "дизель", "аи-", "price", "fuel"]):
         return None
-    # Убираем дефисы в начале
-    name = re.sub(r"^[\s\-\–\—]+", "", name).strip()
+    name = re.sub(r"^[\s\-\–\—\.]+", "", name).strip()
     return name if len(name) >= 2 else None
 
 
 class MultiGoV2Service:
-    """Сервис синхронизации через MultiGo API версии 9 с адаптацией под PostgreSQL"""
+    """Сервис синхронизации через MultiGo V2 (адаптирован под PostgreSQL)"""
 
     def __init__(self):
         self.timeout = aiohttp.ClientTimeout(total=15, connect=8)
@@ -134,8 +151,7 @@ class MultiGoV2Service:
         cleaned = normalize_city_name(city_name)
         if not cleaned:
             return None
-        key = cleaned.lower()
-        return CITY_COORDINATES.get(key)
+        return CITY_COORDINATES.get(cleaned.lower())
 
     async def fetch_prices(self, lat: float, lon: float) -> Dict[str, Dict[str, float]]:
         """Получает цены региона через /avgprices"""
@@ -175,7 +191,7 @@ class MultiGoV2Service:
                     items = data.get("data", {}).get("list", [])
                     for it in items:
                         name = it.get("name", "")
-                        sub = it.get("subCategory", {}).get("idx")
+                        sub = (it.get("subCategory") or {}).get("idx")
                         if sub == 9810 or "элзс" in name.lower():
                             continue
                         loc = it.get("loc")
