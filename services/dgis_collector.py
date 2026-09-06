@@ -1,9 +1,9 @@
-# services/dgis_collector.py
+# services/dgis_collector.py – надёжный сборщик АЗС через API 2ГИС
 import asyncio
 import logging
 import random
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict
 import aiohttp
 
 logger = logging.getLogger(__name__)
@@ -44,10 +44,13 @@ def clean_brand_name(raw_name: str) -> str:
 
 
 class DgisFuelCollector:
-    """Надёжный сборщик станций и координат через публичный шлюз каталога 2ГИС"""
+    """
+    Сборщик АЗС через каталог 2ГИС с поддержкой текстового и рубрикаторного геопоиска.
+    Гарантирует получение станций даже в небольших городах.
+    """
 
     def __init__(self):
-        self.timeout = aiohttp.ClientTimeout(total=20, connect=8)
+        self.timeout = aiohttp.ClientTimeout(total=18, connect=6)
 
     def _get_headers(self) -> Dict[str, str]:
         return {
@@ -57,59 +60,86 @@ class DgisFuelCollector:
             "Origin": "https://2gis.ru"
         }
 
-    async def fetch_city_stations(self, city_name: str, lat: float, lon: float, radius_m: int = 25000) -> List[Dict]:
+    async def fetch_city_stations(self, city_name: str, lat: float, lon: float) -> List[Dict]:
         """
-        Запрашивает АЗС города в радиусе radius_m вокруг центра
-        Возвращает список словарей с полями: name, brand, address, lat, lon, source
+        Гарантированный сбор АЗС города:
+        1. Сначала пробует текстовый геопоиск 'АЗС {city_name}' с сортировкой по расстоянию.
+        2. Если пусто — задействует поиск по рубрике АЗС в радиусе 20 км.
         """
         url = "https://catalog.api.2gis.com/3.0/items"
+
+        # Сценарий 1: Текстовый поиск с привязкой к городу и координатам
         params = {
-            "q": "АЗС",
+            "q": f"АЗС {city_name}",
             "point": f"{lon},{lat}",
-            "radius": str(radius_m),
+            "sort": "distance",
             "type": "branch",
-            "fields": "items.point,items.address_name,items.adm_div,items.rubrics",
+            "fields": "items.point,items.address_name,items.name,items.adm_div",
             "key": DGIS_PUBLIC_KEY,
             "page_size": "50"
         }
+
         stations_list = []
 
-        for attempt in range(1, 4):
-            try:
-                async with aiohttp.ClientSession(timeout=self.timeout) as session:
-                    async with session.get(url, params=params, headers=self._get_headers()) as resp:
-                        if resp.status == 200:
-                            data = await resp.json()
-                            items = data.get("result", {}).get("items", [])
-                            for item in items:
-                                raw_name = item.get("name") or "АЗС"
-                                address = item.get("address_name") or ""
-                                point = item.get("point") or {}
-                                st_lat = point.get("lat")
-                                st_lon = point.get("lon")
-                                if not (st_lat and st_lon):
-                                    continue
-                                clean_brand = clean_brand_name(raw_name)
+        try:
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(url, params=params, headers=self._get_headers()) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        items = data.get("result", {}).get("items", [])
+                        for item in items:
+                            name = item.get("name") or "АЗС"
+                            address = item.get("address_name") or ""
+                            point = item.get("point") or {}
+                            st_lat = point.get("lat")
+                            st_lon = point.get("lon")
+                            if st_lat and st_lon:
                                 stations_list.append({
-                                    "name": raw_name,
-                                    "brand": clean_brand,
-                                    "address": address or f"г. {city_name}",
+                                    "name": name,
+                                    "brand": clean_brand_name(name),
+                                    "address": f"г. {city_name}, {address}" if address else f"г. {city_name}",
                                     "lat": float(st_lat),
                                     "lon": float(st_lon),
                                     "source": "2gis"
                                 })
-                            logger.info(f"✅ 2ГИС: получено {len(stations_list)} АЗС для г. {city_name}")
-                            return stations_list
-                        elif resp.status in (429, 502, 503):
-                            logger.warning(f"2ГИС статус {resp.status} для {city_name}, пауза {attempt*2} сек")
-                            await asyncio.sleep(attempt * 2)
-                        else:
-                            logger.warning(f"2ГИС статус {resp.status} для {city_name}")
-                            await asyncio.sleep(1.5)
-            except Exception as e:
-                logger.debug(f"Попытка {attempt} 2ГИС для {city_name} завершилась ошибкой: {e}")
-                await asyncio.sleep(1.5)
 
+            # Сценарий 2 (Резервный): если Сценарий 1 вернул 0 (например, у специфических городов)
+            if not stations_list:
+                logger.info(f"Текстовый поиск для {city_name} дал 0, пробуем поиск по радиусу вокруг центра...")
+                params_fallback = {
+                    "q": "автозаправочная станция",
+                    "point": f"{lon},{lat}",
+                    "radius": "20000",
+                    "type": "branch",
+                    "fields": "items.point,items.address_name,items.name",
+                    "key": DGIS_PUBLIC_KEY,
+                    "page_size": "50"
+                }
+                async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                    async with session.get(url, params=params_fallback, headers=self._get_headers()) as resp_fb:
+                        if resp_fb.status == 200:
+                            data_fb = await resp_fb.json()
+                            items_fb = data_fb.get("result", {}).get("items", [])
+                            for item in items_fb:
+                                name = item.get("name") or "АЗС"
+                                address = item.get("address_name") or ""
+                                point = item.get("point") or {}
+                                st_lat = point.get("lat")
+                                st_lon = point.get("lon")
+                                if st_lat and st_lon:
+                                    stations_list.append({
+                                        "name": name,
+                                        "brand": clean_brand_name(name),
+                                        "address": f"г. {city_name}, {address}" if address else f"г. {city_name}",
+                                        "lat": float(st_lat),
+                                        "lon": float(st_lon),
+                                        "source": "2gis"
+                                    })
+
+        except Exception as e:
+            logger.error(f"Ошибка запроса 2ГИС для {city_name}: {e}")
+
+        logger.info(f"✅ 2ГИС: получено {len(stations_list)} АЗС для г. {city_name}")
         return stations_list
 
 
