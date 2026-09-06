@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с MultiGo парсером и санитайзером)
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с импортом dgis_sync_worker)
 import os
 import asyncio
 import logging
@@ -26,7 +26,7 @@ from handlers.admin import router as admin_router
 # Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.multigo_parser import multigo_parser_worker  # <--- заменён парсер
+from services.dgis_sync_worker import fuel_price_parser_worker  # <--- ПЕРЕИМЕНОВАННЫЙ МОДУЛЬ
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
 
@@ -246,7 +246,7 @@ async def main():
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
-        asyncio.create_task(run_supervised(multigo_parser_worker, "MultiGoParser")),  # <-- новый парсер
+        asyncio.create_task(run_supervised(fuel_price_parser_worker, "DGISSync")),  # <-- переименованный воркер
         asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
         asyncio.create_task(run_supervised(address_updater_worker, "AddressUpdater")),
     ]
