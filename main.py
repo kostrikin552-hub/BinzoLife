@@ -1,14 +1,14 @@
-# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с импортом dgis_sync_worker)
+# main.py — с HTTP healthcheck для Render
 import os
 import asyncio
 import logging
 import sys
 from typing import List
 
+from aiohttp import web
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
-from aiohttp import web
 from sqlalchemy import text
 
 import config
@@ -16,21 +16,18 @@ from database.session import engine, AsyncSessionLocal
 from middlewares.throttling import ThrottlingMiddleware
 from middlewares.clear_state import ClearStateOnMenuMiddleware
 
-# Хендлеры
 from handlers import (
     start, find, emergency, menu, payments, profile, review,
     contest, notifications, common, inline,
 )
 from handlers.admin import router as admin_router
 
-# Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.dgis_sync_worker import fuel_price_parser_worker  # <--- ПЕРЕИМЕНОВАННЫЙ МОДУЛЬ
+from services.dgis_sync_worker import fuel_price_parser_worker
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
 
-# Импорт для сидинга городов
 from database.crud import seed_all_russian_cities
 
 logging.basicConfig(
@@ -40,42 +37,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("BinzoLifeBot")
 
-CRON_SECRET = os.getenv("CRON_SECRET", "7RV4gLekEl0rFhfm2WtyaX58zQpS19")
 
-
-# ======================== HTTP-СЕРВЕР ========================
+# ======================== HTTP-СЕРВЕР ДЛЯ RENDER ========================
 async def health_check_handler(request):
-    return web.Response(text="OK", status=200)
-
-def check_cron_auth(request) -> bool:
-    token = request.query.get("token")
-    return token == CRON_SECRET
-
-async def cron_alerts_handler(request):
-    if not check_cron_auth(request):
-        return web.Response(text="Forbidden", status=403)
-    return web.Response(text="Alerts disabled", status=200)
-
-async def cron_subscriptions_handler(request):
-    if not check_cron_auth(request):
-        return web.Response(text="Forbidden", status=403)
-    return web.Response(text="Subscriptions disabled", status=200)
+    return web.Response(
+        text='{"status": "ok", "service": "BinzoLife"}',
+        content_type="application/json"
+    )
 
 async def start_http_server():
     port = int(os.environ.get("PORT", "10000"))
     host = "0.0.0.0"
-    logger.info(f"🚀 Запуск HTTP-сервера на {host}:{port}")
     app = web.Application()
     app.router.add_get("/", health_check_handler)
     app.router.add_get("/health", health_check_handler)
     app.router.add_get("/healthz", health_check_handler)
-    app.router.add_get("/cron/alerts", cron_alerts_handler)
-    app.router.add_get("/cron/subscriptions", cron_subscriptions_handler)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host, port)
     await site.start()
-    logger.info(f"✅ HTTP-сервер успешно запущен на {host}:{port}")
+    logger.info(f"✅ Render Healthcheck запущен на порту {port}")
     return runner
 
 
@@ -84,7 +65,7 @@ async def init_database():
     logger.info("Проверка структуры БД...")
     async with AsyncSessionLocal() as db:
         try:
-            # Создание таблицы station_current_fuel (если её нет)
+            # Создание таблицы station_current_fuel
             await db.execute(text("""
                 CREATE TABLE IF NOT EXISTS station_current_fuel (
                     station_id BIGINT NOT NULL,
@@ -103,7 +84,7 @@ async def init_database():
                 ON station_current_fuel (station_id, fuel_type, availability)
             """))
 
-            # Добавление колонок в users (если отсутствуют)
+            # Добавление колонок в users
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -171,7 +152,7 @@ async def init_database():
                 END $$;
             """))
 
-            # Добавление колонки slug в cities (если её нет)
+            # Добавление колонки slug в cities
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -207,11 +188,11 @@ async def main():
     logger.info("=== Запуск BinzoLife Bot ===")
     await init_database()
 
+    # 1. Запускаем HTTP-сервер для Render
+    http_runner = await start_http_server()
+
     bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
-
-    # 1. HTTP-сервер
-    http_runner = await start_http_server()
 
     # 2. Middlewares
     dp.message.middleware(ThrottlingMiddleware(limit=0.5))
@@ -232,7 +213,7 @@ async def main():
     dp.include_router(common.router)
     dp.include_router(admin_router)
 
-    # 4. Актуализация базы городов и слагов (выполняется всегда)
+    # 4. Актуализация базы городов
     async with AsyncSessionLocal() as session:
         try:
             added = await seed_all_russian_cities(session)
@@ -246,12 +227,12 @@ async def main():
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
-        asyncio.create_task(run_supervised(fuel_price_parser_worker, "DGISSync")),  # <-- переименованный воркер
+        asyncio.create_task(run_supervised(fuel_price_parser_worker, "MultiGoV2")),
         asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
         asyncio.create_task(run_supervised(address_updater_worker, "AddressUpdater")),
     ]
 
-    # 6. Polling с ретраями
+    # 6. Polling
     await bot.delete_webhook(drop_pending_updates=True)
     logger.info("✅ Бот готов к запуску polling...")
 
