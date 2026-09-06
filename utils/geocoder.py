@@ -3,7 +3,6 @@ import aiohttp
 import asyncio
 import logging
 from typing import Optional
-from database.crud import get_cached_address, cache_address
 
 logger = logging.getLogger(__name__)
 USER_AGENT = "BinzoLifeBot/2.0 (fuel_station_locator)"
@@ -15,6 +14,9 @@ async def reverse_geocode(lat: float, lon: float, session = None) -> Optional[st
     """
     if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
         return None
+
+    # Локальный импорт для избежания циклической зависимости
+    from database.crud import get_cached_address, cache_address
 
     # 1. Проверяем кэш в БД, если передана сессия
     if session:
