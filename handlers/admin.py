@@ -1125,3 +1125,38 @@ async def test_sanitizer_cmd(message: types.Message):
         result_lines.append(f"{status} «{raw}» → «{cleaned}» (ожидалось «{expected}»)")
 
     await message.answer("\n".join(result_lines), parse_mode="HTML")
+# ========== СИНХРОНИЗАЦИЯ MULTIGO V2 (ручной запуск) ==========
+@router.message(Command("sync_multigo"))
+@admin_only
+async def admin_sync_multigo_cmd(message: types.Message):
+    """
+    Запускает синхронизацию всех городов через MultiGo V2.
+    Использование: /sync_multigo
+    """
+    await message.answer("⏳ Запускаю синхронизацию всех городов через MultiGo V2... Это может занять 1-2 минуты.")
+    try:
+        async with AsyncSessionLocal() as session:
+            from services.multigo_v2 import multigo_v2
+            added, updated = 0, 0
+            cities = await get_all_active_cities(session)
+            for city in cities:
+                if not city.latitude or not city.longitude:
+                    continue
+                a, u = await multigo_v2.sync_city(
+                    session,
+                    city.id,
+                    city.name,
+                    city.latitude,
+                    city.longitude,
+                )
+                added += a
+                updated += u
+                await asyncio.sleep(1.5)
+        await message.answer(
+            f"✅ <b>Синхронизация MultiGo V2 завершена!</b>\n\n"
+            f"• Добавлено/обновлено станций: <b>{added}</b>\n"
+            f"• Добавлено цен: <b>{updated}</b>",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {str(e)[:200]}")
