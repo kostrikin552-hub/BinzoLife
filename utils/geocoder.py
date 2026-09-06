@@ -2,12 +2,13 @@
 import aiohttp
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 logger = logging.getLogger(__name__)
 USER_AGENT = "BinzoLifeBot/2.0 (fuel_station_locator)"
 
-async def reverse_geocode(lat: float, lon: float, session = None) -> Optional[str]:
+
+async def reverse_geocode(lat: float, lon: float, session=None) -> Optional[str]:
     """
     Определяет точный человекочитаемый адрес по координатам (lat, lon).
     Сначала проверяет локальный кэш БД, затем делает запрос к Nominatim.
@@ -73,4 +74,43 @@ async def reverse_geocode(lat: float, lon: float, session = None) -> Optional[st
                     await asyncio.sleep(2)
     except Exception as e:
         logger.debug(f"Ошибка обратного геокодирования ({lat}, {lon}): {e}")
+    return None
+
+
+async def geocode_address(address: str) -> Optional[Tuple[float, float]]:
+    """
+    Определяет координаты (широта, долгота) по текстовому адресу (прямой геокодинг).
+    Использует Nominatim (OpenStreetMap).
+    Возвращает кортеж (lat, lon) или None.
+    """
+    if not address or not address.strip():
+        return None
+
+    url = "https://nominatim.openstreetmap.org/search"
+    params = {
+        "q": address.strip(),
+        "format": "jsonv2",
+        "limit": 1,
+        "accept-language": "ru"
+    }
+    headers = {
+        "User-Agent": USER_AGENT
+    }
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=8)
+        async with aiohttp.ClientSession(timeout=timeout) as http_client:
+            async with http_client.get(url, params=params, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if data and isinstance(data, list) and len(data) > 0:
+                        lat = float(data[0].get("lat", 0))
+                        lon = float(data[0].get("lon", 0))
+                        if lat != 0 and lon != 0:
+                            return (lat, lon)
+                elif resp.status == 429:
+                    logger.warning("Nominatim rate-limit (429), делаем паузу...")
+                    await asyncio.sleep(2)
+    except Exception as e:
+        logger.debug(f"Ошибка геокодирования адреса '{address}': {e}")
     return None
