@@ -1,4 +1,4 @@
-# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с исправленным сидингом)
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с MultiGo парсером и санитайзером)
 import os
 import asyncio
 import logging
@@ -16,7 +16,7 @@ from database.session import engine, AsyncSessionLocal
 from middlewares.throttling import ThrottlingMiddleware
 from middlewares.clear_state import ClearStateOnMenuMiddleware
 
-# Хендлеры (кроме admin)
+# Хендлеры
 from handlers import (
     start, find, emergency, menu, payments, profile, review,
     contest, notifications, common, inline,
@@ -26,12 +26,12 @@ from handlers.admin import router as admin_router
 # Фоновые сервисы
 from services.data_collector import data_collector_worker
 from services.radar import friday_radar_worker
-from services.fuelprice_parser import fuel_price_parser_worker
+from services.multigo_parser import multigo_parser_worker  # <--- заменён парсер
 from services.subscription import subscription_expiration_worker
 from services.address_updater import address_updater_worker
 
-# ИМПОРТ ФУНКЦИЙ ДЛЯ ГОРОДОВ (ОБЯЗАТЕЛЬНО)
-from database.crud import seed_all_russian_cities, update_city_slugs_from_seed
+# Импорт для сидинга городов
+from database.crud import seed_all_russian_cities
 
 logging.basicConfig(
     level=logging.INFO,
@@ -84,7 +84,7 @@ async def init_database():
     logger.info("Проверка структуры БД...")
     async with AsyncSessionLocal() as db:
         try:
-            # Создание таблицы station_current_fuel
+            # Создание таблицы station_current_fuel (если её нет)
             await db.execute(text("""
                 CREATE TABLE IF NOT EXISTS station_current_fuel (
                     station_id BIGINT NOT NULL,
@@ -103,7 +103,7 @@ async def init_database():
                 ON station_current_fuel (station_id, fuel_type, availability)
             """))
 
-            # Добавление колонок в users
+            # Добавление колонок в users (если отсутствуют)
             await db.execute(text("""
                 DO $$ 
                 BEGIN 
@@ -189,20 +189,6 @@ async def init_database():
             logger.warning(f"Ошибка инициализации БД: {e}")
 
 
-# ======================== ФОНОВЫЙ ПЛАНИРОВЩИК ПАРСЕРА ========================
-async def scheduled_fuel_parser_worker(session_factory):
-    await asyncio.sleep(45)
-    while True:
-        try:
-            await fuel_parser.run_daily_parse_all_cities(session_factory)
-            await asyncio.sleep(24 * 3600)
-        except asyncio.CancelledError:
-            break
-        except Exception as err:
-            logger.error(f"Сбой в воркере парсера: {err}")
-            await asyncio.sleep(300)
-
-
 # ======================== СУПЕРВИЗОР ========================
 async def run_supervised(coro, task_name: str):
     while True:
@@ -246,12 +232,10 @@ async def main():
     dp.include_router(common.router)
     dp.include_router(admin_router)
 
-    # 4. Актуализация базы городов и слагов (ВЫПОЛНЯЕТСЯ ВСЕГДА)
+    # 4. Актуализация базы городов и слагов (выполняется всегда)
     async with AsyncSessionLocal() as session:
         try:
-            from database.crud import seed_all_russian_cities
             added = await seed_all_russian_cities(session)
-            # Проверяем итоговый статус
             total_cities = await session.execute(text("SELECT COUNT(*) FROM cities WHERE is_active = true"))
             with_slugs = await session.execute(text("SELECT COUNT(*) FROM cities WHERE slug IS NOT NULL AND slug != ''"))
             logger.info(f"📊 Статус городов в БД: Всего активных = {total_cities.scalar()}, Со слагами = {with_slugs.scalar()}")
@@ -262,7 +246,7 @@ async def main():
     background_tasks: List[asyncio.Task] = [
         asyncio.create_task(run_supervised(data_collector_worker, "DataCollector")),
         asyncio.create_task(run_supervised(lambda: friday_radar_worker(bot), "FridayRadar")),
-        asyncio.create_task(run_supervised(fuel_price_parser_worker, "FuelPriceParser")),
+        asyncio.create_task(run_supervised(multigo_parser_worker, "MultiGoParser")),  # <-- новый парсер
         asyncio.create_task(run_supervised(lambda: subscription_expiration_worker(bot), "Subscription")),
         asyncio.create_task(run_supervised(address_updater_worker, "AddressUpdater")),
     ]
