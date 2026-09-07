@@ -1,4 +1,4 @@
-# services/multigo_v2.py — расширенная версия со всеми городами-миллионниками и регионами РФ
+# services/multigo_v2.py — полная версия с защитой от дубликатов (scalars().first())
 import asyncio
 import logging
 import re
@@ -51,7 +51,7 @@ CITY_COORDINATES: Dict[str, Tuple[float, float]] = {
     "пермь": (58.0105, 56.2502),
     "волгоград": (48.7080, 44.5133),
 
-    # 🏙️ КРУПНЕЙШИЕ РЕГИОНАЛЬНЫЕ ЦЕНТРЫ (500k+ и ключевые узлы)
+    # 🏙️ КРУПНЕЙШИЕ РЕГИОНАЛЬНЫЕ ЦЕНТРЫ
     "саратов": (51.5335, 46.0342),
     "тюмень": (57.1530, 65.5343),
     "тольятти": (53.5088, 49.4189),
@@ -277,26 +277,29 @@ class MultiGoV2Service:
         if not clean_name:
             return 0, 0
 
-        # 1. Ищем город в базе данных
-        city_stmt = select(City).where(func.lower(City.name) == clean_name.lower(), City.is_active == True)
+        # 1. Безопасный поиск города: используем .scalars().first() вместо .scalar_one_or_none()
+        city_stmt = (
+            select(City)
+            .where(func.lower(City.name) == clean_name.lower(), City.is_active == True)
+            .order_by(City.id.asc())
+        )
         city_res = await session.execute(city_stmt)
-        city = city_res.scalar_one_or_none()
+        city = city_res.scalars().first()
         if not city:
             logger.warning(f"[MultiGo V2] Город {city_name} не найден в БД, пропускаем")
             return 0, 0
 
-        # 2. Определение координат: сначала словарь, если нет — координаты из модели City в БД
+        # 2. Определение координат
         coords = CITY_COORDINATES.get(clean_name.lower())
         if not coords and city.latitude and city.longitude:
             coords = (float(city.latitude), float(city.longitude))
-
         if not coords:
-            logger.warning(f"[MultiGo V2] Город {city_name} не имеет координат ни в словаре, ни в БД")
+            logger.warning(f"[MultiGo V2] Город {city_name} не имеет координат")
             return 0, 0
 
         lat, lon = coords
 
-        # 3. Запрос цен и станций
+        # 3. Запрос цен и станций через API
         prices = await self.fetch_prices(lat, lon)
         stations = await self.fetch_stations(lat, lon)
         if not stations:
@@ -307,6 +310,7 @@ class MultiGoV2Service:
         stations_added = 0
         prices_added = 0
 
+        # 4. Загрузка станций города
         stmt = select(Station).where(Station.city_id == city_id, Station.is_active == True)
         existing = (await session.execute(stmt)).scalars().all()
         coord_index = {
@@ -340,6 +344,7 @@ class MultiGoV2Service:
                     station.address = st_data["address"][:300]
                     await session.flush()
 
+        # 5. Сохранение цен (с защитой от дубликатов через .scalars().first())
         if prices:
             now = datetime.now(timezone.utc)
             for st in coord_index.values():
@@ -355,16 +360,26 @@ class MultiGoV2Service:
                     if price_val < 30 or price_val > 150:
                         continue
 
-                    p_stmt = select(FuelPrice).where(
-                        FuelPrice.station_id == st.id,
-                        FuelPrice.fuel_type == fuel_type_enum,
-                        FuelPrice.is_fresh == True,
+                    # Запрашиваем существующие свежие цены, берем первую
+                    p_stmt = (
+                        select(FuelPrice)
+                        .where(
+                            FuelPrice.station_id == st.id,
+                            FuelPrice.fuel_type == fuel_type_enum,
+                            FuelPrice.is_fresh == True,
+                        )
+                        .order_by(FuelPrice.id.desc())
                     )
-                    existing_price = (await session.execute(p_stmt)).scalar_one_or_none()
-                    if existing_price:
+                    existing_prices = (await session.execute(p_stmt)).scalars().all()
+                    if existing_prices:
+                        # Обновляем последнюю запись
+                        existing_price = existing_prices[0]
                         existing_price.price = price_val
                         existing_price.source = SourceType.PARSER
                         existing_price.recorded_at = now
+                        # Если были дублирующие свежие цены — отключаем их
+                        for duplicate_p in existing_prices[1:]:
+                            duplicate_p.is_fresh = False
                         prices_added += 1
                     else:
                         new_price = FuelPrice(
@@ -380,7 +395,7 @@ class MultiGoV2Service:
                         prices_added += 1
 
         await commit_or_rollback(session)
-        logger.info(f"[MultiGo V2] Город {city_name}: сохранено {stations_added} станций, {prices_added} цен")
+        logger.info(f"[MultiGo V2] Город {city_name}: успешно сохранено {stations_added} новых АЗС, {prices_added} цен")
         return stations_added, prices_added
 
     async def sync_all_cities(self, session_factory):
