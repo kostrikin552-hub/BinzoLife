@@ -1,6 +1,6 @@
-# handlers/review.py — ПОЛНАЯ ВЕРСИЯ
-import html
+# handlers/review.py — полная исправленная версия
 import logging
+import html
 from datetime import datetime, timedelta, timezone
 from aiogram import Router, types, F
 from aiogram.fsm.context import FSMContext
@@ -30,13 +30,15 @@ async def start_review(message: types.Message, state: FSMContext):
             await message.answer("Сначала выполните /start")
             return
 
-        # Проверка: не оставлял ли пользователь отзыв за последние 24 часа
-        last_review = await db.execute(
+        # Безопасная проверка: не оставлял ли отзыв за последние 24 часа
+        cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+        res = await db.execute(
             select(Review).where(
                 Review.user_id == user.id,
-                Review.created_at >= datetime.now(timezone.utc) - timedelta(days=1)
-            )
-        ).scalar_one_or_none()
+                Review.created_at >= cutoff
+            ).limit(1)
+        )
+        last_review = res.scalars().first()
         if last_review:
             await message.answer("⏳ Вы уже оставляли отзыв за последние 24 часа. Попробуйте завтра.")
             return
@@ -79,7 +81,6 @@ async def skip_comment(callback: types.CallbackQuery, state: FSMContext):
 
 @router.message(ReviewStates.waiting_comment, F.text)
 async def process_comment(message: types.Message, state: FSMContext):
-    # Если нажата кнопка меню — отменяем
     if message.text in ["◀️ Назад", "/start", "/help", "📍 Найти заправку", "👤 Профиль", "⛽ Найти заправку"]:
         await state.clear()
         await message.answer("Оставление отзыва отменено.")
