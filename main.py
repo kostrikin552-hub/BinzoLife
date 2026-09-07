@@ -1,4 +1,4 @@
-# main.py — с HTTP healthcheck для Render
+# main.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ С HEALTHCHECK И МИГРАЦИЯМИ
 import os
 import asyncio
 import logging
@@ -159,6 +159,30 @@ async def init_database():
                     IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
                                    WHERE table_name='cities' AND column_name='slug') THEN
                         ALTER TABLE cities ADD COLUMN slug VARCHAR(50) UNIQUE;
+                    END IF;
+                END $$;
+            """))
+
+            # === МИГРАЦИЯ: переименование achievement_code -> achievement_type ===
+            await db.execute(text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_name='user_achievements' AND column_name='achievement_code')
+                       AND NOT EXISTS (SELECT 1 FROM information_schema.columns
+                                       WHERE table_name='user_achievements' AND column_name='achievement_type') THEN
+                        ALTER TABLE user_achievements RENAME COLUMN achievement_code TO achievement_type;
+                    END IF;
+                END $$;
+            """))
+
+            # Переименовываем constraint, если он ещё существует со старым именем
+            await db.execute(text("""
+                DO $$
+                BEGIN
+                    IF EXISTS (SELECT 1 FROM pg_constraint
+                               WHERE conname = 'uq_user_achievement' AND conrelid = 'user_achievements'::regclass) THEN
+                        ALTER TABLE user_achievements RENAME CONSTRAINT uq_user_achievement TO uq_user_achievement_type;
                     END IF;
                 END $$;
             """))
