@@ -1,4 +1,4 @@
-# handlers/start.py — ИСПРАВЛЕННАЯ ВЕРСИЯ (импорты клавиатур)
+# handlers/start.py — ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ
 import html
 import logging
 from aiogram import Router, types, F
@@ -10,13 +10,14 @@ from database.session import AsyncSessionLocal
 from database.crud import (
     get_user, create_user, get_city_by_name, apply_referral,
     get_user_by_referral_code, get_user_by_id, set_user_timezone,
-    find_nearest_city, save_user_location, commit_or_rollback
+    find_nearest_city, save_user_location, commit_or_rollback,
+    get_all_active_cities
 )
 from database.models import FuelType
 from handlers.find import perform_search
 from handlers.payments import show_pro_info
 from keyboards.reply import main_menu_keyboard, welcome_back_keyboard
-from keyboards.inline import city_choice_keyboard, popular_cities_keyboard
+from keyboards.inline import city_choice_keyboard, popular_cities_keyboard, get_cities_keyboard
 
 router = Router()
 logger = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
 
 @router.message(F.location)
 async def process_instant_onboarding_geo(message: types.Message, state: FSMContext):
-    """Автоопределение города по GPS и переход к поиску."""
+    """Обработка геолокации как из онбординга, так и из главного меню."""
     lat = message.location.latitude
     lon = message.location.longitude
     user_id = message.from_user.id
@@ -39,9 +40,22 @@ async def process_instant_onboarding_geo(message: types.Message, state: FSMConte
         if not user:
             user = await create_user(db, user_id, message.from_user.username, message.from_user.first_name)
 
+        # Сохраняем геолокацию пользователя
         await save_user_location(db, user.id, lat, lon)
         await set_user_timezone(db, user.id, lat, lon)
 
+        # Если у пользователя уже есть город и он нажал геолокацию из меню — просто обновляем позицию
+        if user.city_id:
+            city = await get_city_by_id(db, user.city_id)
+            if city:
+                await message.answer(
+                    f"📍 Ваша геопозиция обновлена для города <b>{html.escape(city.name)}</b>!",
+                    parse_mode="HTML",
+                    reply_markup=main_menu_keyboard()
+                )
+                return
+
+        # Если города нет — определяем ближайший
         nearest_city = await find_nearest_city(db, lat, lon)
         if nearest_city:
             user.city_id = nearest_city.id
@@ -141,19 +155,31 @@ async def process_start(message: types.Message, state: FSMContext):
         )
 
 
-# ---------- Обработчики выбора города ----------
+# ====================== ОБРАБОТЧИКИ ВЫБОРА ГОРОДА ======================
+
+@router.callback_query(F.data == "noop")
+async def noop_handler(callback: types.CallbackQuery):
+    """Заглушка для кнопок пагинации (номер страницы)."""
+    await callback.answer()
+
+
 @router.callback_query(F.data == "city_list")
 async def city_list(callback: types.CallbackQuery):
+    """Показывает полный список городов с пагинацией."""
     await callback.answer()
+    async with AsyncSessionLocal() as db:
+        cities = await get_all_active_cities(db)
+        cities.sort(key=lambda x: x.name)
     await callback.message.edit_text(
-        "📍 Выбери свой город из списка:",
-        reply_markup=popular_cities_keyboard()
+        "📍 Выберите свой город из списка:",
+        reply_markup=get_cities_keyboard(cities, page=0)
     )
 
 
 @router.callback_query(lambda c: c.data.startswith("city_select_"))
 async def city_select(callback: types.CallbackQuery):
-    city_name = callback.data.split("_")[2]
+    """Выбор города по названию (из популярных)."""
+    city_name = callback.data.removeprefix("city_select_").strip()
     await callback.answer()
 
     async with AsyncSessionLocal() as db:
@@ -171,7 +197,11 @@ async def city_select(callback: types.CallbackQuery):
             user.city_id = city.id
             await commit_or_rollback(db)
 
-    await callback.message.delete()
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
     await callback.message.answer(
         f"✅ Город {city_name} сохранён! Теперь я буду показывать цены именно для этого города.\n\n"
         "Что делаем?",
@@ -179,14 +209,58 @@ async def city_select(callback: types.CallbackQuery):
     )
 
 
-@router.callback_query(F.data == "search_now")
-async def search_now(callback: types.CallbackQuery):
+@router.callback_query(lambda c: c.data.startswith("select_city_"))
+async def select_city_by_id(callback: types.CallbackQuery):
+    """Выбор города по ID (из пагинированного списка)."""
+    city_id_str = callback.data.removeprefix("select_city_").strip()
     await callback.answer()
-    await callback.message.delete()
+
+    try:
+        city_id = int(city_id_str)
+    except ValueError:
+        return
+
+    async with AsyncSessionLocal() as db:
+        city = await get_city_by_id(db, city_id)
+        if not city:
+            await callback.answer("Город не найден", show_alert=True)
+            return
+
+        user = await get_user(db, callback.from_user.id)
+        if user:
+            user.city_id = city.id
+            await commit_or_rollback(db)
+
+    try:
+        await callback.message.delete()
+    except Exception:
+        pass
+
     await callback.message.answer(
-        "🚀 Для поиска заправки сначала выбери город.\n"
-        "Нажми /start, чтобы выбрать город.",
-        reply_markup=main_menu_keyboard()
+        f"✅ Город <b>{html.escape(city.name)}</b> сохранён!\n\nЧто делаем?",
+        reply_markup=welcome_back_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.callback_query(lambda c: c.data.startswith("cities_page_"))
+async def paginate_cities(callback: types.CallbackQuery):
+    """Переключение страниц списка городов."""
+    page_str = callback.data.removeprefix("cities_page_").strip()
+    await callback.answer()
+
+    try:
+        page = int(page_str)
+    except ValueError:
+        page = 0
+
+    async with AsyncSessionLocal() as db:
+        cities = await get_all_active_cities(db)
+        cities.sort(key=lambda x: x.name)
+
+    await callback.message.edit_text(
+        "📍 Выберите ваш город из списка:",
+        reply_markup=get_cities_keyboard(cities, page=page)
     )
 
 
