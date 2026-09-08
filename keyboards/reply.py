@@ -1,7 +1,6 @@
 # keyboards/reply.py — ПОЛНАЯ ВЕРСИЯ
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-
 def main_menu_keyboard():
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
@@ -13,7 +12,6 @@ def main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-
 def welcome_back_keyboard():
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
@@ -22,7 +20,6 @@ def welcome_back_keyboard():
         [KeyboardButton(text="👤 Профиль")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
-
 
 def fuel_choice_keyboard():
     return ReplyKeyboardMarkup(
@@ -33,4 +30,16 @@ def fuel_choice_keyboard():
             [KeyboardButton(text="◀️ Назад")],
         ],
         resize_keyboard=True
+    )
+
+def request_geo_or_city_keyboard():
+    """Клавиатура с кнопкой геолокации и кнопкой ручного ввода (для выбора города)"""
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📍 Определить город по GPS", request_location=True)],
+            [KeyboardButton(text="✏️ Написать город текстом")],
+            [KeyboardButton(text="◀️ В главное меню")],
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=True
     )
