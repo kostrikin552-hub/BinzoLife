@@ -1,14 +1,15 @@
-# keyboards/inline.py — ПОЛНАЯ ВЕРСИЯ (с пагинацией городов)
+# keyboards/inline.py — ПОЛНАЯ ВЕРСИЯ (с новой клавиатурой выбора города)
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-
 def city_choice_keyboard() -> InlineKeyboardMarkup:
+    """Удобный выбор: геолокация или ввод текстом"""
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Выбрать город из списка", callback_data="city_list")]
+        [InlineKeyboardButton(text="✏️ Ввести название города", callback_data="input_city_name")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
     ])
 
-
 def popular_cities_keyboard(with_back: bool = False) -> InlineKeyboardMarkup:
+    """Старая клавиатура с популярными городами (оставлена для совместимости)"""
     cities = [
         "Москва", "Санкт-Петербург", "Новосибирск", "Екатеринбург",
         "Казань", "Нижний Новгород", "Челябинск", "Омск",
@@ -28,9 +29,8 @@ def popular_cities_keyboard(with_back: bool = False) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text="◀️ Назад в профиль", callback_data="back_to_profile")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 def get_cities_keyboard(cities: list, page: int = 0, per_page: int = 8) -> InlineKeyboardMarkup:
-    """Инлайн-клавиатура выбора города с постраничной навигацией."""
+    """Инлайн-клавиатура выбора города с постраничной навигацией (оставлена для совместимости)"""
     total_pages = max(1, (len(cities) + per_page - 1) // per_page)
     page = max(0, min(page, total_pages - 1))
     start = page * per_page
@@ -54,7 +54,6 @@ def get_cities_keyboard(cities: list, page: int = 0, per_page: int = 8) -> Inlin
     keyboard.append(nav_buttons)
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-
 def get_fuel_selection_keyboard(selected_fuel: str = "АИ-95") -> InlineKeyboardMarkup:
     fuels = ["АИ-92", "АИ-95", "АИ-98", "АИ-100", "ДТ"]
     buttons = []
@@ -62,7 +61,6 @@ def get_fuel_selection_keyboard(selected_fuel: str = "АИ-95") -> InlineKeyboar
         label = f"✅ {f}" if f == selected_fuel else f
         buttons.append(InlineKeyboardButton(text=label, callback_data=f"fuel_{f}"))
     return InlineKeyboardMarkup(inline_keyboard=[buttons[:3], buttons[3:]])
-
 
 def station_action_keyboard(station_id: int, price: float, availability, lat: float, lon: float,
                             city_id: int = None, is_pro: bool = False, index: int = 0,
@@ -91,12 +89,10 @@ def station_action_keyboard(station_id: int, price: float, availability, lat: fl
 
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-
 def notification_action_keyboard(notif_id: int):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="❌ Отписаться", callback_data=f"unsub_{notif_id}")]
     ])
-
 
 def pro_purchase_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -107,7 +103,6 @@ def pro_purchase_keyboard():
         [InlineKeyboardButton(text="💎 Подробнее о PRO", callback_data="buy_pro")]
     ])
 
-
 def emergency_payment_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="💳 Оплатить 50 ₽", callback_data="pay_emergency_rub")],
@@ -115,14 +110,8 @@ def emergency_payment_keyboard():
         [InlineKeyboardButton(text="🔥 Купить PRO", callback_data="buy_pro")]
     ])
 
-
 def sort_choice_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔥 По рейтингу", callback_data="sort_rating")],
         [InlineKeyboardButton(text="💰 По минимальной цене", callback_data="sort_price")]
     ])
-
-
-def welcome_back_keyboard() -> InlineKeyboardMarkup:
-    # Уже используется из reply.py, но оставим для совместимости
-    pass
