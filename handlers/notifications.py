@@ -1,4 +1,4 @@
-# handlers/notifications.py — ПОЛНАЯ ВЕРСИЯ
+# handlers/notifications.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
 import logging
 from aiogram import Router, types, F
 from aiogram.exceptions import TelegramBadRequest
@@ -57,11 +57,12 @@ async def list_notifications(message: types.Message):
 async def unsubscribe_notification(callback: types.CallbackQuery):
     notif_id = int(callback.data.split("_")[1])
     async with AsyncSessionLocal() as db:
+        user = await get_user(db, callback.from_user.id)
         notif = await get_notification_by_id(db, notif_id)
-        if not notif:
+        if not notif or not user:
             await callback.answer("Уведомление не найдено.")
             return
-        if notif.user_id != callback.from_user.id:
+        if notif.user_id != user.id:
             await callback.answer("⛔ Вы не можете отписаться от этого уведомления.")
             return
         await deactivate_notification(db, notif_id)
