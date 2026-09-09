@@ -1,3 +1,4 @@
+# services/rating.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (исправлен расчёт price_score)
 from typing import Dict, Any
 from datetime import datetime, timezone
 from database.models import Station, FuelPrice, AvailabilityReport, AvailabilityStatus
@@ -16,11 +17,14 @@ def calculate_rating(
     # 1. Ценовая привлекательность (60%)
     price_score = 0.0
     if avg_price_30d > 0:
-        deviation = (avg_price_30d - price_record.price) / avg_price_30d
-        price_score = min(deviation / 0.10, 1.0)
-        if min_price_30d > 0 and max_price_30d > min_price_30d:
-            position = (price_record.price - min_price_30d) / (max_price_30d - min_price_30d)
-            price_score = max(price_score, 1.0 - position)
+        diff = avg_price_30d - price_record.price
+        if abs(diff) < 0.05:
+            # Цена равна средней – даём базовый балл
+            price_score = 0.6
+        else:
+            deviation = diff / avg_price_30d
+            # Нормализуем: отклонение ±10% даёт 0.0…1.0
+            price_score = max(0.0, min(1.0, 0.5 + (deviation / 0.10) * 0.5))
     price_score = max(0.0, min(1.0, price_score))
 
     # 2. Наличие и свежесть (40%)
@@ -44,7 +48,7 @@ def calculate_rating(
     total = (price_score * 0.6 + availability_score * 0.4) * 100
     rating = round(min(100, total))
 
-    # ---- Расчёт разницы в рублях ----
+    # Расчёт разницы в рублях
     diff = avg_price_30d - price_record.price if avg_price_30d > 0 else 0
     if diff > 0.5:
         price_text = f"дешевле на {diff:.2f} ₽"
@@ -75,6 +79,6 @@ def calculate_rating(
         "availability": availability_record.status if availability_record else AvailabilityStatus.GRAY,
         "availability_time": availability_record.recorded_at if availability_record else None,
         "explanation": "; ".join(reasons),
-        "price_diff": diff,  # для использования в карточке
+        "price_diff": diff,
         "avg_price": avg_price_30d,
     }
