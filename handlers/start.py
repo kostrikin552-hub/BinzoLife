@@ -1,0 +1,341 @@
+# handlers/start.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (устранены конфликты F.location и FSM)
+import html
+import logging
+from aiogram import Router, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton
+)
+
+from database.session import AsyncSessionLocal
+from database.crud import (
+    get_user, create_user, get_city_by_name, get_city_by_id,
+    apply_referral, get_user_by_referral_code,
+    set_user_timezone, find_nearest_city, save_user_location,
+    commit_or_rollback, find_or_create_city_by_query
+)
+from database.models import FuelType
+from handlers.find import perform_search
+from handlers.payments import show_pro_info
+from keyboards.reply import (
+    main_menu_keyboard, welcome_back_keyboard, request_geo_or_city_keyboard
+)
+from utils.geocoder import reverse_geocode
+from states.city import CitySelectStates
+
+router = Router()
+logger = logging.getLogger(__name__)
+
+
+@router.message(Command("start"))
+async def cmd_start(message: types.Message, state: FSMContext):
+    await state.clear()
+    await process_start(message, state)
+
+
+# ====================== 1. ПРИОРИТЕТНЫЙ ХЕНДЛЕР: ГЕОЛОКАЦИЯ ПРИ ВЫБОРЕ ГОРОДА ======================
+@router.message(CitySelectStates.waiting_city_name, F.location)
+async def process_location_while_selecting_city(message: types.Message, state: FSMContext):
+    """Геолокация при выборе города (из профиля или онбординга)."""
+    lat = message.location.latitude
+    lon = message.location.longitude
+    user_id = message.from_user.id
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, user_id)
+        if not user:
+            user = await create_user(db, user_id, message.from_user.username, message.from_user.first_name)
+
+        await save_user_location(db, user.id, lat, lon)
+        await set_user_timezone(db, user.id, lat, lon)
+
+        city = await find_nearest_city(db, lat, lon, radius_km=100.0)
+        if not city:
+            city_name = await reverse_geocode(lat, lon)
+            if city_name:
+                city = await find_or_create_city_by_query(db, city_name)
+
+        if city:
+            user.city_id = city.id
+            user.last_lat = lat
+            user.last_lon = lon
+            await commit_or_rollback(db)
+
+            data = await state.get_data()
+            origin = data.get("origin")
+            await state.clear()
+
+            await message.answer(
+                f"✅ Город успешно определен: <b>{html.escape(city.name)}</b>!\n"
+                "Все цены и фильтры настроены.",
+                reply_markup=main_menu_keyboard(),
+                parse_mode="HTML"
+            )
+
+            if origin == "profile":
+                from handlers.profile import show_profile
+                await show_profile(message, user_telegram_id=user_id)
+            else:
+                # Сразу запускаем поиск дешёвого бензина рядом
+                fuel_value = getattr(user.default_fuel, "value", FuelType.AI_95.value) if user.default_fuel else FuelType.AI_95.value
+                await state.update_data(
+                    city_id=city.id,
+                    lat=lat,
+                    lon=lon,
+                    fuel_type=FuelType.AI_95,
+                    sort_mode="rating"
+                )
+                await perform_search(message, state, user_telegram_id=user_id)
+        else:
+            await message.answer(
+                "❌ Не удалось определить город по этим координатам.\n"
+                "Пожалуйста, напишите название города текстом (например: <i>Казань</i>):",
+                reply_markup=request_geo_or_city_keyboard(),
+                parse_mode="HTML"
+            )
+
+
+# ====================== 2. УНИВЕРСАЛЬНЫЙ ХЕНДЛЕР ГЕОЛОКАЦИИ ======================
+@router.message(F.location)
+async def process_general_location(message: types.Message, state: FSMContext):
+    """Обработка геолокации вне состояния выбора города."""
+    lat = message.location.latitude
+    lon = message.location.longitude
+    user_id = message.from_user.id
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, user_id)
+        if not user:
+            user = await create_user(db, user_id, message.from_user.username, message.from_user.first_name)
+
+        await save_user_location(db, user.id, lat, lon)
+        await set_user_timezone(db, user.id, lat, lon)
+
+        # 1. Если город уже был привязан — обновляем координаты и ищем
+        if user.city_id:
+            user.last_lat = lat
+            user.last_lon = lon
+            await commit_or_rollback(db)
+            city = await get_city_by_id(db, user.city_id)
+            city_name = city.name if city else "вашем регионе"
+
+            await message.answer(
+                f"📍 Точные координаты обновлены!\n"
+                f"Ищем лучшие цены в <b>{html.escape(city_name)}</b>...",
+                parse_mode="HTML"
+            )
+            await state.update_data(
+                city_id=user.city_id,
+                lat=lat,
+                lon=lon,
+                fuel_type=FuelType.AI_95,
+                sort_mode="rating"
+            )
+            await perform_search(message, state, user_telegram_id=user_id)
+            return
+
+        # 2. Если города ещё нет — определяем по координатам
+        nearest_city = await find_nearest_city(db, lat, lon, radius_km=100.0)
+        if not nearest_city:
+            geo_name = await reverse_geocode(lat, lon)
+            if geo_name:
+                nearest_city = await find_or_create_city_by_query(db, geo_name)
+
+        if nearest_city:
+            user.city_id = nearest_city.id
+            user.last_lat = lat
+            user.last_lon = lon
+            await commit_or_rollback(db)
+
+            await message.answer(
+                f"📍 Определен регион: <b>{html.escape(nearest_city.name)}</b>!\n"
+                f"Ищем выгодные заправки рядом с вами...",
+                parse_mode="HTML"
+            )
+            await state.update_data(
+                city_id=nearest_city.id,
+                lat=lat,
+                lon=lon,
+                fuel_type=FuelType.AI_95,
+                sort_mode="rating"
+            )
+            await perform_search(message, state, user_telegram_id=user_id)
+            return
+
+        await message.answer(
+            "❌ Не удалось определить ваш город автоматически.\n"
+            "Пожалуйста, введите название города текстом:",
+            reply_markup=request_geo_or_city_keyboard()
+        )
+
+
+# ====================== 3. СТАРТОВЫЙ СЦЕНАРИЙ ======================
+async def process_start(message: types.Message, state: FSMContext):
+    args = message.text.split() if message.text else []
+    user_id = message.from_user.id
+    username = message.from_user.username
+    first_name = message.from_user.first_name
+
+    ref_code = None
+    if len(args) > 1:
+        if args[1].startswith("ref_"):
+            ref_code = args[1][4:]
+        elif args[1] == "pro":
+            await show_pro_info(message)
+            return
+
+    async with AsyncSessionLocal() as db:
+        user = await get_user(db, user_id)
+        if not user:
+            user = await create_user(db, user_id, username, first_name)
+
+            if ref_code:
+                referrer = await get_user_by_referral_code(db, ref_code)
+                if referrer and referrer.telegram_id != user.telegram_id:
+                    await apply_referral(db, user.id, ref_code)
+
+            city = await get_city_by_name(db, "Красноярск")
+            if city:
+                user.city_id = city.id
+                user.last_lat = city.latitude
+                user.last_lon = city.longitude
+                await commit_or_rollback(db)
+
+            user_name = html.escape(first_name or "водитель")
+            welcome_text = (
+                f"👋 Рады видеть вас, <b>{user_name}</b>!\n\n"
+                f"Я <b>BinzoLife</b> — ваш персональный топливный штурман. "
+                f"Я нахожу честные цены на стелах АЗС и считаю, где заправиться <b>действительно выгодно</b> "
+                f"с учётом расхода на дорогу.\n\n"
+                f"📊 <b>В среднем наши водители берегут:</b>\n"
+                f"• <code>250 – 480 ₽</code> с каждого полного бака\n"
+                f"• <code>до 3 500 ₽</code> семейного бюджета в месяц\n\n"
+                f"🎁 <b>Подарок на старт:</b> вам открыт <b>полный PRO-доступ на 3 дня</b>!\n\n"
+                f"👇 <i>Нажмите кнопку ниже (или отправьте точку через 📎 Скрепку → Геопозиция), чтобы увидеть лучшую цену рядом:</i>"
+            )
+            geo_kb = ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="📍 Найти самый дешевый бензин рядом", request_location=True)],
+                    [KeyboardButton(text="✏️ Написать город текстом")],
+                    [KeyboardButton(text="ℹ️ Как это работает")],
+                    [KeyboardButton(text="👤 Профиль")]
+                ],
+                resize_keyboard=True,
+                one_time_keyboard=False
+            )
+            await message.answer(welcome_text, reply_markup=geo_kb, parse_mode="HTML")
+            return
+
+        if user.city_id:
+            user_name = html.escape(first_name or "водитель")
+            await message.answer(
+                f"⛽ <b>{user_name}</b>, с возвращением! Где ищем заправку сегодня?\n\n"
+                f"💰 Экономь до 500 ₽ за раз и не стой в очередях.\n"
+                f"📍 Чтобы обновить позицию, нажми «📍 Отправить геолокацию» или пришли точку через скрепку 📎.",
+                reply_markup=welcome_back_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        await message.answer(
+            "⛽ Привет! Я — BinzoLife.\n\n"
+            "Сэкономь до 500 ₽ на одной заправке и забудь про очереди.\n\n"
+            "📍 Для начала определим твой город:",
+            reply_markup=request_geo_or_city_keyboard()
+        )
+
+
+# ====================== 4. ОБРАБОТЧИКИ ВВОДА ГОРОДА ТЕКСТОМ ======================
+@router.callback_query(F.data == "input_city_name")
+async def input_city_name(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(CitySelectStates.waiting_city_name)
+    try:
+        await callback.message.edit_text(
+            "✏️ Введите название вашего города (например: <b>Казань</b>, <b>Тюмень</b>, <b>СПб</b>):",
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_menu")]
+            ])
+        )
+    except Exception:
+        await callback.message.answer(
+            "✏️ Введите название вашего города:",
+            parse_mode="HTML"
+        )
+
+
+@router.message(CitySelectStates.waiting_city_name, F.text)
+async def process_text_city(message: types.Message, state: FSMContext):
+    text_val = message.text.strip()
+
+    if text_val in ["✏️ Написать город текстом", "🏙 Выбрать город вручную"]:
+        await message.answer("✏️ Пожалуйста, напишите название города сообщением:")
+        return
+
+    if text_val in ["◀️ В главное меню", "◀️ Назад", "/start"]:
+        await state.clear()
+        await message.answer("Главное меню:", reply_markup=main_menu_keyboard())
+        return
+
+    async with AsyncSessionLocal() as db:
+        city = await find_or_create_city_by_query(db, text_val)
+        if not city:
+            await message.answer(
+                f"❌ Не удалось найти город «{html.escape(text_val)}».\n"
+                "Пожалуйста, проверьте написание или отправьте геолокацию через кнопку/скрепку:",
+                reply_markup=request_geo_or_city_keyboard(),
+                parse_mode="HTML"
+            )
+            return
+
+        user = await get_user(db, message.from_user.id)
+        if not user:
+            user = await create_user(db, message.from_user.id, message.from_user.username, message.from_user.first_name)
+
+        user.city_id = city.id
+        user.last_lat = city.latitude
+        user.last_lon = city.longitude
+        await commit_or_rollback(db)
+
+        data = await state.get_data()
+        origin = data.get("origin")
+        await state.clear()
+
+        await message.answer(
+            f"✅ Город установлен: <b>{html.escape(city.name)}</b>!\n"
+            "Теперь все цены и поиск АЗС настроены под ваш регион.",
+            reply_markup=main_menu_keyboard(),
+            parse_mode="HTML"
+        )
+
+        if origin == "profile":
+            from handlers.profile import show_profile
+            await show_profile(message, user_telegram_id=message.from_user.id)
+
+
+@router.message(F.text == "✏️ Написать город текстом")
+async def manual_city_text_prompt(message: types.Message, state: FSMContext):
+    await state.set_state(CitySelectStates.waiting_city_name)
+    await message.answer(
+        "✏️ Введите название вашего города (например: <b>Москва</b>, <b>Казань</b>, <b>Екатеринбург</b>):",
+        reply_markup=request_geo_or_city_keyboard(),
+        parse_mode="HTML"
+    )
+
+
+@router.message(F.text == "ℹ️ Как это работает")
+async def how_it_works(message: types.Message):
+    text = (
+        "📖 <b>Как BinzoLife экономит время и деньги:</b>\n\n"
+        "1️⃣ <b>Поиск АЗС за 5 секунд</b>\n"
+        "Нажмите «📍 Отправить геолокацию» или «⛽ Найти заправку» — бот найдёт ближайшие заправки с минимальной ценой.\n\n"
+        "2️⃣ <b>Бензин на нуле?</b>\n"
+        "Нажмите «🚨 Бензин заканчивается!» — покажем гарантированно работающие станции поблизости.\n\n"
+        "3️⃣ <b>Сообщайте цены</b>\n"
+        "За актуализацию цен вы получаете репутацию и бесплатные дни PRO.\n\n"
+        "💡 <i>Если кнопка «📍 Отправить геолокацию» на ПК выдаёт ошибку, отправьте точку через меню 📎 → «Геопозиция».</i>"
+    )
+    await message.answer(text, parse_mode="HTML", reply_markup=welcome_back_keyboard())
