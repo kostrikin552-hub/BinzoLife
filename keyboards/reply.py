@@ -1,7 +1,8 @@
-# keyboards/reply.py — ПОЛНАЯ ВЕРСИЯ
+# keyboards/reply.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
-def main_menu_keyboard():
+
+def main_menu_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
         [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
@@ -12,7 +13,8 @@ def main_menu_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-def welcome_back_keyboard():
+
+def welcome_back_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
         [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
@@ -21,7 +23,8 @@ def welcome_back_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
 
-def fuel_choice_keyboard():
+
+def fuel_choice_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="⛽ АИ-92"), KeyboardButton(text="⛽ АИ-95")],
@@ -32,8 +35,9 @@ def fuel_choice_keyboard():
         resize_keyboard=True
     )
 
-def request_geo_or_city_keyboard():
-    """Клавиатура с кнопкой геолокации и кнопкой ручного ввода (для выбора города)"""
+
+def request_geo_or_city_keyboard() -> ReplyKeyboardMarkup:
+    """Клавиатура с кнопкой геолокации и кнопкой ручного ввода города."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📍 Определить город по GPS", request_location=True)],
@@ -41,5 +45,5 @@ def request_geo_or_city_keyboard():
             [KeyboardButton(text="◀️ В главное меню")],
         ],
         resize_keyboard=True,
-        one_time_keyboard=True
+        one_time_keyboard=False
     )
