@@ -1,12 +1,10 @@
-# keyboards/reply.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ
+# keyboards/reply.py — ОБНОВЛЁННАЯ ВЕРСИЯ (без «Бензин заканчивается!» и «Отправить геолокацию» в главном меню)
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 
 def main_menu_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
-        [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
-        [KeyboardButton(text="🚨 Бензин заканчивается!")],
         [KeyboardButton(text="🔔 Мои уведомления"), KeyboardButton(text="💎 PRO")],
         [KeyboardButton(text="👤 Профиль"), KeyboardButton(text="⭐ Оставить отзыв")],
         [KeyboardButton(text="ℹ️ Помощь")],
@@ -17,8 +15,6 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
 def welcome_back_keyboard() -> ReplyKeyboardMarkup:
     buttons = [
         [KeyboardButton(text="⛽ Найти заправку")],
-        [KeyboardButton(text="📍 Отправить геолокацию", request_location=True)],
-        [KeyboardButton(text="🚨 Бензин заканчивается!")],
         [KeyboardButton(text="👤 Профиль")],
     ]
     return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
@@ -37,7 +33,7 @@ def fuel_choice_keyboard() -> ReplyKeyboardMarkup:
 
 
 def request_geo_or_city_keyboard() -> ReplyKeyboardMarkup:
-    """Клавиатура с кнопкой геолокации и кнопкой ручного ввода города."""
+    """Клавиатура выбора города: только GPS и текстовый ввод (используется в смене города)."""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📍 Определить город по GPS", request_location=True)],
