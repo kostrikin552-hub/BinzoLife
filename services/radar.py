@@ -1,10 +1,11 @@
-# services/radar.py — ПОЛНАЯ ВЕРСИЯ (все изменения из этапов 1–5)
+# services/radar.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с кнопкой быстрого маршрута)
 import asyncio
 import logging
 import html
 from datetime import datetime
 from typing import List, Dict, Any
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from sqlalchemy import text
 from database.session import AsyncSessionLocal
 from services.notifications import safe_broadcast
@@ -13,33 +14,28 @@ logger = logging.getLogger(__name__)
 
 
 async def process_user_batch(bot: Bot, users: List[Dict[str, Any]]):
-    """Обрабатывает пачку пользователей (до 100) для рассылки радара."""
+    """Обрабатывает пачку пользователей (до 100) для рассылки пятничного радара."""
     if not users:
         return
 
     # Группируем по городам
-    city_groups = {}
+    city_groups: Dict[int, List[Dict[str, Any]]] = {}
     for u in users:
         city_id = u.get("city_id")
         if not city_id:
             continue
-        # Проверяем наличие координат (для будущей персонализации)
-        if u.get("last_lat") is None or u.get("last_lon") is None:
-            # Если координат нет — можно пропустить или отправить общую сводку
-            # Пока оставляем, так как радар показывает топ-3 по городу, а не по расстоянию
-            pass
-        if city_id not in city_groups:
-            city_groups[city_id] = []
-        city_groups[city_id].append(u)
+        city_groups.setdefault(city_id, []).append(u)
 
     for city_id, city_users in city_groups.items():
         async with AsyncSessionLocal() as db:
             # Получаем топ-3 дешёвые станции в городе (АИ-95)
             top = (await db.execute(text("""
-                SELECT s.brand, s.address, f.price
+                SELECT s.id, s.brand, s.address, s.latitude, s.longitude, f.price
                 FROM stations s
                 JOIN fuel_prices f ON s.id = f.station_id
-                WHERE s.city_id = :cid AND f.fuel_type = 'AI-95' AND f.is_fresh = true
+                WHERE s.city_id = :cid 
+                  AND f.fuel_type = 'AI-95' 
+                  AND f.is_fresh = true
                 ORDER BY f.price ASC
                 LIMIT 3;
             """), {"cid": city_id})).mappings().all()
@@ -47,18 +43,16 @@ async def process_user_batch(bot: Bot, users: List[Dict[str, Any]]):
         if not top:
             continue
 
-        # Персонализированный текст радара
-        first_user = city_users[0]
-        avg_price = sum(s["price"] for s in top) / len(top)
         best = top[0]
+        avg_price = sum(s["price"] for s in top) / len(top)
         diff_per_liter = avg_price - best["price"]
-        tank_volume = 50.0  # можно подгрузить из профиля, но для простоты используем 50 л
+        tank_volume = 50.0
         tank_savings = diff_per_liter * tank_volume if diff_per_liter > 0 else 0
 
         lines = [
             "☀️ <b>Доброе утро пятницы! Время заправить бак на выходные</b> 🚗💨\n",
             "Мы просканировали заправки вашего района на свежесть цен:\n",
-            f"\n🏆 <b>Лидер экономии сегодня:</b>\n",
+            "🏆 <b>Лидер экономии сегодня:</b>\n",
             f"⛽ <b>{html.escape(best['brand'] or 'АЗС')}</b> — <b>{best['price']:.2f} ₽</b> (в среднем по городу {avg_price:.2f} ₽)\n",
             f"📍 <code>{html.escape(best['address'] or 'адрес уточняется')}</code>\n",
         ]
@@ -71,8 +65,22 @@ async def process_user_batch(bot: Bot, users: List[Dict[str, Any]]):
 
         msg_text = "\n".join(lines)
 
+        # Формируем кнопку быстрого маршрута
+        if best.get("latitude") and best.get("longitude"):
+            nav_url = f"https://yandex.ru/maps/?rtext=~{best['latitude']},{best['longitude']}&rtt=auto"
+        else:
+            nav_url = "https://yandex.ru/maps"
+
+        radar_kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text=f"🚗 Поехать на {best['brand'] or 'АЗС'} (Навигатор)",
+                url=nav_url
+            )],
+            [InlineKeyboardButton(text="⛽ Найти заправку рядом", callback_data="restart_search")]
+        ])
+
         user_ids = [u["telegram_id"] for u in city_users]
-        await safe_broadcast(bot, user_ids, msg_text)
+        await safe_broadcast(bot, user_ids, msg_text, reply_markup=radar_kb)
 
 
 async def broadcast_friday_radar(bot: Bot):
@@ -94,13 +102,14 @@ async def broadcast_friday_radar(bot: Bot):
                     break
                 offset += page_size
                 await process_user_batch(bot, users)
-                await asyncio.sleep(1)  # дать памяти освободиться
+                await asyncio.sleep(1)  # даём памяти освободиться
         logger.info("[FridayRadar] Рассылка завершена.")
     except Exception as e:
         logger.error(f"[FridayRadar] Ошибка рассылки: {e}")
 
 
 async def friday_radar_worker(bot: Bot):
+    """Планировщик: каждая пятница в 17:00."""
     logger.info("[FridayRadar] Планировщик запущен.")
     while True:
         try:
