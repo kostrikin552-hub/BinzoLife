@@ -1,46 +1,73 @@
-# services/notifications.py — ПОЛНАЯ ВЕРСИЯ (все изменения)
+# services/notifications.py — ПОЛНАЯ ФИНАЛЬНАЯ ВЕРСИЯ (с поддержкой reply_markup)
 import asyncio
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
 from aiogram import Bot
 from aiogram.exceptions import TelegramForbiddenError, TelegramRetryAfter
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import text
 from database.session import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
 
+
 # =====================================================================
-# 1. БЕЗОПАСНАЯ РАССЫЛКА С ЗАЩИТОЙ ОТ 429
+# 1. БЕЗОПАСНАЯ РАССЫЛКА С ЗАЩИТОЙ ОТ 429 И ПОДДЕРЖКОЙ INLINE-КНОПОК
 # =====================================================================
 
-async def safe_broadcast(bot: Bot, user_ids: List[int], text: str, parse_mode: str = "HTML") -> dict:
+async def safe_broadcast(
+    bot: Bot,
+    user_ids: List[int],
+    text: str,
+    reply_markup: Optional[Union[InlineKeyboardMarkup, Any]] = None,
+    parse_mode: str = "HTML"
+) -> dict:
     """
     Безопасная рассылка с защитой от 429 Too Many Requests.
     Возвращает { "success": int, "blocked": int }
+    Поддерживает InlineKeyboardMarkup для кнопок под сообщением.
     """
     success = 0
     blocked = 0
     for i, uid in enumerate(user_ids):
         try:
-            await bot.send_message(uid, text, parse_mode=parse_mode)
+            await bot.send_message(
+                uid,
+                text,
+                reply_markup=reply_markup,
+                parse_mode=parse_mode,
+                disable_web_page_preview=True
+            )
             success += 1
         except TelegramForbiddenError:
             blocked += 1
-            # Помечаем пользователя как неактивного
             async with AsyncSessionLocal() as db:
-                await db.execute(text("UPDATE users SET is_active = false WHERE telegram_id = :uid"), {"uid": uid})
+                await db.execute(
+                    text("UPDATE users SET is_active = false WHERE telegram_id = :uid"),
+                    {"uid": uid}
+                )
                 await db.commit()
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after + 0.5)
-            await bot.send_message(uid, text, parse_mode=parse_mode)
-            success += 1
+            try:
+                await bot.send_message(
+                    uid,
+                    text,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=True
+                )
+                success += 1
+            except Exception as e2:
+                logger.error(f"Повторная отправка {uid} не удалась: {e2}")
         except Exception as e:
             logger.error(f"Ошибка отправки пользователю {uid}: {e}")
         # Пауза после каждых 25 сообщений (≈25 msg/сек)
         if (i + 1) % 25 == 0:
             await asyncio.sleep(1.05)
     return {"success": success, "blocked": blocked}
+
 
 # =====================================================================
 # 2. ОТПРАВКА УВЕДОМЛЕНИЙ ОДНОМУ ПОЛЬЗОВАТЕЛЮ
@@ -65,6 +92,7 @@ async def send_user_notification(
     except Exception as e:
         logger.debug(f"[Notifications] Не удалось отправить сообщение {telegram_id}: {e}")
         return False
+
 
 # =====================================================================
 # 3. КЛАСС-СЕРВИС ДЛЯ ОТПРАВКИ ТИПОВЫХ УВЕДОМЛЕНИЙ
@@ -95,12 +123,13 @@ class NotificationService:
         )
         await send_user_notification(bot, user_id, msg)
 
+
 # =====================================================================
-# 4. ПРОВЕРКА АЛЕРТОВ ЦЕН (ОТКЛЮЧЕНА В MAIN.PY, НО ОСТАВЛЕНА ДЛЯ СОВМЕСТИМОСТИ)
+# 4. ПРОВЕРКА АЛЕРТОВ ЦЕН (для совместимости; в main.py может быть отключён)
 # =====================================================================
 
 async def process_price_drop_alerts(bot: Bot):
-    """Проверка изменения цен (отключена в main.py, но код сохранён)."""
+    """Проверка изменения цен (модуль совместимости)."""
     try:
         async with AsyncSessionLocal() as db:
             stmt = text("""
@@ -124,7 +153,7 @@ async def process_price_drop_alerts(bot: Bot):
             user_stmt = text("""
                 SELECT telegram_id 
                 FROM users 
-                WHERE telegram_id IS NOT NULL
+                WHERE telegram_id IS NOT NULL AND is_active = true
                 LIMIT 50;
             """)
             users = (await db.execute(user_stmt)).mappings().all()
@@ -142,13 +171,14 @@ async def process_price_drop_alerts(bot: Bot):
     except Exception as e:
         logger.warning(f"[PriceAlerts] Предупреждение при проверке цен: {e}")
 
+
 # =====================================================================
-# 5. ФОНОВЫЙ ВОРКЕР (ОТКЛЮЧЕН, НО ОСТАВЛЕН ДЛЯ СОВМЕСТИМОСТИ)
+# 5. ФОНОВЫЙ ВОРКЕР МОНИТОРИНГА ЦЕН (опционально)
 # =====================================================================
 
 async def price_alert_worker(bot: Bot):
-    """Фоновый воркер мониторинга цен (отключён в main.py)."""
-    logger.info("[PriceAlertWorker] Сервис мониторинга цен запущен (но отключён в main.py).")
+    """Фоновый воркер мониторинга цен (может быть отключён в main.py)."""
+    logger.info("[PriceAlertWorker] Сервис мониторинга цен запущен.")
     await asyncio.sleep(60)
     while True:
         try:
@@ -159,6 +189,7 @@ async def price_alert_worker(bot: Bot):
         except Exception as e:
             logger.error(f"[PriceAlertWorker] Необработанное исключение: {e}")
         await asyncio.sleep(1800)
+
 
 # Алиасы для совместимости
 send_price_alerts = process_price_drop_alerts
